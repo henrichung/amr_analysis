@@ -27,9 +27,6 @@ data_metadata$meta__host_animal_common %>% table()
 #Table Analysis
 ###############
 
-#how many states? [25]
-table(data_metadata$meta__lab_state)
-
 #what are the most prevalent genes?
 t1 <- data_genes %>%
   group_by(gene) %>%
@@ -70,10 +67,11 @@ t2 <- data_genes %>%
          turkey = turkey/sample_counts[["turkey"]],
          horse = horse/sample_counts[["horse"]],
          dog = dog/sample_counts[["dog"]],
-         cat = cat/sample_counts[["cat"]])
+         cat = cat/sample_counts[["cat"]]) %>%
+  replace(is.na(.), 0)
 t2
 
-write_csv(t2, "outputs/gene_counts_per_animal.csv")
+write_csv(t2, "outputs/gene_presence_per_animal.csv")
 
 
 
@@ -88,15 +86,21 @@ p1d <- data_metadata %>%
   ungroup() %>%
   filter(!is.na(meta__host_animal_common)) %>%
   mutate(meta__host_animal_common = gsub("poultry-domestic ", "",meta__host_animal_common ))
-  
+
+sum(p1d$n)
+
 p1 <- p1d %>%
   ggplot(aes(x = reorder(meta__host_animal_common, desc(n)), y = n)) +
   geom_bar(stat = "identity") +
   xlab("") + ylab("count") + 
   ylim(0, 200) + 
-  labs(title = "Histogram of Samples by Animal origin (06/21/21)", subtitle = "N = 845") +
+  labs(title = "Histogram of Samples by Animal origin (07/21/21)", subtitle = "N = 846") +
   geom_text(aes(label=n), vjust = -2)
 p1
+
+pdf("outputs/sample_histogram_animal.pdf")
+p1
+dev.off()
 
 #How many samples of each type were there? (scientific names)
 p2d <- data_metadata %>%
@@ -113,9 +117,13 @@ p2 <- p2d %>%
   geom_bar(stat = "identity") +
   xlab("") + ylab("count") +
   ylim(0, 200) + 
-  labs(title = "Histogram of Samples by Animal origin", subtitle = "N = 845")+
+  labs(title = "Histogram of Samples by Animal origin (07/21/21)", subtitle = "N = 846")+
   geom_text(aes(label=n), vjust = -2)
 p2
+
+pdf("outputs/sample_histogram_animal_species.pdf")
+p2
+dev.off()
 
 #how many AB genes were found in each sample by database?
 p3d <- data_hits %>%
@@ -124,13 +132,18 @@ p3d <- data_hits %>%
   summarize(hits = sum(value)) %>%
   ungroup() %>%
   filter(!is.na(host_animal_common))
+length(unique(p3d$sampleid))
 
 p3 <- p3d %>%
   ggplot(aes(x = database, y = hits, fill = host_animal_common)) +
   geom_boxplot() +
   facet_wrap(~host_animal_common, nrow = 2) +
-  labs(fill = "Host Animal (Common)" , title = "# of AMR Genes by Host Animal and Database", subtitle = "N = 847")
+  labs(fill = "Host Animal (Common)" , title = "# of AMR Genes by Host Animal and Database", subtitle = "N = 846")
 p3
+
+pdf("outputs/database_bias_animal.pdf")
+p3
+dev.off()
 
 #How many samples do I have database hit data for?
 filter(p3d, !is.na(hits)) %>% pull(sampleid) %>% unique() %>% length()
@@ -146,7 +159,12 @@ p4d <- data_hits %>%
 p4 <- p4d %>% 
   ggplot(aes(x = host_animal_common, y = hits, fill = host_animal_common)) +
   geom_boxplot() +
-  labs(fill = "Host Animal (Common)" , title = "# of unique AMR Genes by Host Animal", subtitle = "N = 847")
+  labs(fill = "Host Animal (Common)" , title = "# of unique AMR Genes by Host Animal", subtitle = "N = 846")
 p4
+
+pdf("outputs/database_hits_animal.pdf")
+p4
+dev.off()
+
 length(unique(p4d$sampleid))
   
