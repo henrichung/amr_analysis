@@ -62,7 +62,7 @@ u1d <- data_phenos %>%
 
 options(dplyr.summarise.inform = FALSE)
 #number of permutations to generate null distribution
-N  = 10
+N  = 10000
 #Calculate null distribution for welch's T-test and compare 
 message(Sys.time(), " STARTING T-TEST NULL")
 u2d <- u1d %>% 
@@ -79,6 +79,7 @@ table(u2d$oneway.sig)
 
 #plot to visualize difference in # of AMR genes by animal/resistance type
 u2 <- u2d %>%
+  ungroup() %>%
   filter(oneway.sig == T) %>%
   select(meta__host_animal_common, test_type_desc, data) %>%
   unnest(data) %>%
@@ -191,6 +192,9 @@ library(cluster)
 library(ggdendro)
 library(dendextend)
 
+RColorBrewer::brewer.pal(7, "Dark2")
+heatmap_colors = c("black", "darkred", RColorBrewer::brewer.pal(7, "Dark2"))
+
 heatmap_all <- data_genes %>%
   pivot_wider(names_from = "gene", values_from = "value") %>%
   rename(meta__sampleid = "sampleid") %>%
@@ -226,7 +230,7 @@ heatmap_all.plot <- heatmap_all %>%
   ggplot(aes(x = gene, y = reorder(meta__sampleid, ord))) +
   geom_tile(aes(fill = as.factor(value))) +
   scale_fill_manual(name = "Gene", labels = c("Absence", "Presence", "cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"), 
-                    values = c("black", "darkred", "#F8766D", "#D39200", "#00BA38", "#00C19F", "#00B9E3", "#DB72FB", "#FF61C3")) + 
+                    values = heatmap_colors) + 
   coord_flip() + 
   theme(axis.text.y = element_text(size = 8),
         axis.text.x = element_text(size = 3)) +
@@ -257,7 +261,7 @@ heatmap_chr.plot <- heatmap_chr %>%
   ggplot(aes(x = gene, y = reorder(meta__sampleid, ord_chr))) +
   geom_tile(aes(fill = as.factor(value))) +
   scale_fill_manual(name = "Gene", labels = c("Absence", "Presence", "cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"), 
-                    values = c("black", "darkred", "#F8766D", "#D39200", "#00BA38", "#00C19F", "#00B9E3", "#DB72FB", "#FF61C3")) + 
+                    values = heatmap_colors) + 
   coord_flip() + 
   theme(axis.text.y = element_text(size = 8),
         axis.text.x = element_text(size = 3)) +
@@ -289,7 +293,7 @@ heatmap_pls.plot <- heatmap_pls %>%
   ggplot(aes(x = gene, y = reorder(meta__sampleid, ord_pls))) +
   geom_tile(aes(fill = as.factor(value))) +
   scale_fill_manual(name = "Gene", labels = c("Absence", "Presence", "cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"), 
-                    values = c("black", "darkred", "#F8766D", "#D39200", "#00BA38", "#00C19F", "#00B9E3", "#DB72FB", "#FF61C3")) + 
+                    values = heatmap_colors) + 
   coord_flip() + 
   theme(axis.text.y = element_text(size = 8),
         axis.text.x = element_text(size = 3)) +
@@ -322,7 +326,7 @@ heatmap_rare.plot <- heatmap_rare %>%
   ggplot(aes(x = gene, y = reorder(meta__sampleid, ord_rare))) +
   geom_tile(aes(fill = as.factor(value))) +
   scale_fill_manual(name = "Gene", labels = c("Absence", "Presence", "cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"), 
-                    values = c("black", "darkred", "#F8766D", "#D39200", "#00BA38", "#00C19F", "#00B9E3", "#DB72FB", "#FF61C3")) + 
+                    values = heatmap_colors) + 
   coord_flip() + 
   theme(axis.text.y = element_text(size = 8),
         axis.text.x = element_text(size = 3)) +
@@ -344,7 +348,7 @@ heatmap_animal.plot <- heatmap_all %>%
   #ggplot(aes(x = gene, y = meta__sampleid)) + 
   geom_tile(aes(fill = as.factor(value))) +
   scale_fill_manual(name = "Gene", labels = c("Absence", "Presence", "cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"), 
-                    values = c("black", "darkred", "#F8766D", "#D39200", "#00BA38", "#00C19F", "#00B9E3", "#DB72FB", "#FF61C3")) + 
+                    values = heatmap_colors) + 
   coord_flip() + 
   theme(axis.text.y = element_text(size = 8),
         axis.text.x = element_text(size = 3)) +

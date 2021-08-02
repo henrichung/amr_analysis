@@ -1,244 +1,42 @@
-#Set up environment
-########################
-setwd("~/Projects/usda_ab")
-library(readxl)
+# Load required packages and set up folder directory
+setwd("E:/Projects/amr_analysis")
 library(tidyverse)
+library(ontologyIndex)
 rm(list = ls())
+source("helper_functions.R")
+
 dataFolder <- "data/"
 dataFiles <- list.files(dataFolder)
 
 
-#function to read in all sheets from a single excel file.
-read_excel_allsheets <- function(filename, tibble = FALSE) {
-  sheets <- readxl::excel_sheets(filename)
-  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
-  if(!tibble) x <- lapply(x, as.data.frame)
-  names(x) <- sheets
-  x
+# Parse through pp# files for sample data.
+# Read in the number of individual gene identifier 
+# hits per database for each sample.
+# ===================================
+data_files_list <- list()
+data_files <- list.files(dataFolder, pattern = ".*ppy.*")
+for(j in 1:length(data_files)){
+  temp <- read_excel_allsheets(paste(dataFolder, data_files[j], sep = "")) %>%
+    .[which(sapply(., nrow) > 0)]
+  data_files_list[[j]] <- bind_rows(temp, .id = "sampleID")
 }
-
-#Read in data
-#########################
-
-#Read in information associating genes with gene identifiers and their type.
-identifiers <- read_csv(paste(dataFolder, "identifier_edited.csv", sep = ""))
-
-#Read in information about the S,I,R MIC breakpoints for different animal species/AB resistances.
-ab_breakpoints <- read_excel(paste(dataFolder, "CLSIbreakpoint_refTablePalantir.xlsx", sep = ""))
-
-#read in information classifying antibiotics into broader types.
-classes <- read_excel(paste(dataFolder, "antibiotic classes.xlsx", sep = ""))
-
-####
-
-#read in 306 samples from "AST" dataset. 
-ast_files <- list.files(dataFolder, pattern = "ppy.*_astdata")
-ast_list <- list()
-
-#read files to list
-for(i in length(ast_files)){
-  temp <- read_excel_allsheets(paste(dataFolder, ast_files[i], sep = ""))
-  temp <- temp[which(sapply(temp, nrow) > 0)]
-  ast_list[[i]] <- bind_rows(temp, .id = "sampleID")
-}
-
-#bind and reformat list
-ast <- bind_rows(ast_list) %>%
-  select(-c('Laboratory Name', 'Unique Specimen ID')) %>%
-  rename("ID" = sampleID, "Lab_state" = "State of Animal Origin", 
-         "Diagnosis" = "Final Diagnosis", "Specimen"= "Specimen/ source tissue") %>%
-  mutate("Host_animal_common" = tolower(`Animal Species`)) %>%
-  select(-c("Animal Species")) 
-
-
-#Read in 699 samples from "mss" dataset. 
-#read files to list
-mss_list <- list()
-for(i in c(1:3)){
-  mss_list <- read_excel_allsheets(paste(dataFolder, "Ecoli_auto_msss.xlsx", sep = ""))
-}
-#bind
-mss <- bind_rows(mss_list)
+names(data_files_list) <- data_files
 
 
 
-#Read in the number of individual gene identifier hits per database for each sample.
-db_hits_list <- list()
-db_data_files <- list.files(paste(dataFolder, "reusdaamrdata", sep = ""))
+# Separate ppy files based data suffix
+#  ast - phenotype data
+#  abricate/amrfinder - genotype data 
+# ===================================
 
-#read in all sheets in database hits (takes 5 minutes)
-for(j in 1:length(db_data_files)){
-  temp <- read_excel_allsheets(paste(paste(dataFolder, "reusdaamrdata", sep = ""), db_data_files[j], sep = "/"))
-  temp <- temp[which(sapply(temp, nrow) > 0)]
-  db_hits_list[[j]] <- bind_rows(temp, .id = "sampleID")
-}
-names(db_hits_list) <- db_data_files
+# Load crossreference for antibiotic agents against different databases.
+classes <- read_csv(paste(dataFolder, "antibiotic classes.csv", sep = ""))
 
-#separate abricate/amrfinder database results
-data_abricate <- bind_rows(db_hits_list[grepl("abricate", names(db_hits_list))])
-data_amrfinder <- bind_rows(db_hits_list[grepl("amrfinder", names(db_hits_list))])
+# Read in information about the S,I,R MIC breakpoints 
+# for different animal species/AB resistances.
+breakpoints <- read_excel(paste(dataFolder, "CLSIbreakpoint_refTablePalantir.xlsx", sep = ""))
 
-#reshape abricate
-abricate_samples <- unique(data_abricate$sampleID) %>%
-  as.data.frame() %>%
-  separate(".", into = c("V1", "V2", "V3")) %>%
-  mutate(V2 = tolower(V2)) %>%
-  mutate("V2" = ifelse(V2 == "cowmn55108ppy30052", "cow", V2)) %>%
-  pull("V2") %>%
-  table()
-
-#reshape amrfinder
-amrfinder_samples <- unique(data_amrfinder$sampleID)%>%
-  as.data.frame() %>%
-  separate(".", into = c("V1", "V2", "V3")) %>%
-  pull("V2") %>%
-  tolower() %>%
-  table()
-
-#Reshape data
-#############################
-###########
-my_abricate <- data_abricate %>%
-  rename_with(tolower)%>%
-  select(c("sampleid", "gene", "database")) %>% 
-  rename("identifier" = gene) %>%
-  mutate(host_animal_common = sampleid) %>%
-  separate("host_animal_common", into = c("V1", "host_animal_common", "V3")) %>%
-  mutate(host_animal_common = tolower(host_animal_common)) %>%
-  mutate("host_animal_common" = ifelse(host_animal_common == "cowmn55108ppy30052", "cow", host_animal_common)) %>%
-  mutate("sampleid" = ifelse(sampleid == "EC-CowMN55108PPY30052", "EC-Cow-MN55108PPY30052", sampleid)) %>%
-  select(-c("V1", "V3")) %>%
-  mutate(value = 1) 
-head(my_abricate)
-
-my_amrfinder <- data_amrfinder %>%
-  rename_with(tolower) %>%
-  select(c("sampleid", "gene.symbol")) %>%
-  rename("identifier" = gene.symbol) %>%
-  mutate(database = "amrfinder") %>%  
-  mutate(host_animal_common = sampleid) %>%
-  separate("host_animal_common", into = c("V1", "host_animal_common", "V3")) %>%
-  mutate(host_animal_common = tolower(host_animal_common)) %>%
-  select(-c("V1", "V3")) %>%
-  mutate(value = 1)
-head(my_amrfinder)
-
-#Combine abricate and amrfinder data into single datasheet.
-data_hits <- bind_rows(my_abricate, my_amrfinder) %>%
-  mutate(identifier = paste("gene__", identifier, sep = "")) %>%
-  left_join(identifiers) %>%
-  separate(sampleid, into = c("blank1", "blank2", "sampleid"), sep = "-") %>%
-  select(-c("blank1", "blank2")) %>%
-  filter(host_animal_common != "duck") %>%
-  mutate(host_animal_common = case_when( #change common animal names to standard format.
-    grepl("cat", .$host_animal_common, ignore.case = TRUE) ~ "cat",
-    grepl("cow", .$host_animal_common, ignore.case = TRUE) ~ "cattle",
-    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "dog",
-    grepl("horse", .$host_animal_common, ignore.case = TRUE) ~ "horse",
-    grepl("chick", .$host_animal_common, ignore.case = TRUE) ~ "chicken",
-    grepl("turk", .$host_animal_common, ignore.case = TRUE) ~ "turkey",
-    grepl("pig", .$host_animal_common, ignore.case = TRUE) ~ "swine")) %>%
-  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"))) 
-  head(data_hits)
-
-
-#reformat data hits to include only genes per sample in long format.
-data_genes <- data_hits %>%
-  select(c("sampleid", "gene", "value")) %>%
-  unique() %>%
-  pivot_wider(names_from = "gene", values_from = "value") %>%
-  replace(is.na(.), 0) %>%
-  reshape2::melt() %>%
-  rename("gene" = variable) 
-head(data_genes)
-
-
-#reformat mss and ast data into single file.
-my_data_raw <- mss %>%
-  filter(!grepl("Chicken", Sequence_file_date)) %>% #fix sequence file name error 
-  mutate(Host_animal_common = case_when( #change common animal names to standard format.
-    grepl("cat", .$Sequence_file_name, ignore.case = TRUE) ~ "cat",
-    grepl("cow", .$Sequence_file_name, ignore.case = TRUE) ~ "cattle",
-    grepl("dog", .$Sequence_file_name, ignore.case = TRUE) ~ "dog",
-    grepl("horse", .$Sequence_file_name, ignore.case = TRUE) ~ "horse",
-    grepl("chick", .$Sequence_file_name, ignore.case = TRUE) ~ "chicken",
-    grepl("turk", .$Sequence_file_name, ignore.case = TRUE) ~ "turkey",
-    grepl("pig", .$Sequence_file_name, ignore.case = TRUE) ~ "swine")) %>%
-  mutate(Host_animal_species = case_when( #add species animal names.
-    grepl("cat", .$Sequence_file_name, ignore.case = TRUE) ~ "Felis catus",
-    grepl("cow", .$Sequence_file_name, ignore.case = TRUE) ~ "Bos taurus",
-    grepl("dog", .$Sequence_file_name, ignore.case = TRUE) ~ "Canis familiaris",
-    grepl("horse", .$Sequence_file_name, ignore.case = TRUE) ~ "Equus caballus",
-    grepl("chick", .$Sequence_file_name, ignore.case = TRUE) ~ "Gallus gallus",
-    grepl("turk", .$Sequence_file_name, ignore.case = TRUE) ~ "Meleagris gallopavo",
-    grepl("pig", .$Sequence_file_name, ignore.case = TRUE) ~ "Sus domesticus")) %>%
-  filter(Host_animal_common != "ducks") %>%  #remove ducks
-  bind_rows(ast) %>% #bind to ast dataset
-  mutate("Host_animal_common" = tolower(Host_animal_common)) %>% #reformat common animal names.
-  mutate("Host_animal_common" = gsub("poultry-domestic ", "", Host_animal_common)) %>% 
-  mutate(Host_animal_common = trimws(Host_animal_common)) %>%
-  mutate(Host_animal_common = ifelse(Host_animal_common == "equine", "horse", Host_animal_common)) %>%
-  mutate(Host_animal_common = factor(Host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"))) %>%
-  group_by(ID) %>%
-  slice(1) %>%
-  ungroup() %>%
-  mutate(Host_animal_species = case_when(
-    grepl("cat", .$Host_animal_common, ignore.case = TRUE) ~ "Felis catus",
-    grepl("cow", .$Host_animal_common, ignore.case = TRUE) ~ "Bos taurus",
-    grepl("dog", .$Host_animal_common, ignore.case = TRUE) ~ "Canis familiaris",
-    grepl("horse", .$Host_animal_common, ignore.case = TRUE) ~ "Equus caballus",
-    grepl("chick", .$Host_animal_common, ignore.case = TRUE) ~ "Gallus gallus",
-    grepl("turk", .$Host_animal_common, ignore.case = TRUE) ~ "Meleagris gallopavo",
-    grepl("pig|swine", .$Host_animal_common, ignore.case = TRUE) ~ "Sus domesticus"))
-
-#calculate how many samples that are missing phenotype data? #10 (07/21/21)
-filter(my_data_raw, is.na(Host_animal_common)) %>% nrow()
-
-#remove unlabeled samples
-my_data <- filter(my_data_raw, !is.na(Host_animal_common)) %>%
-  bind_rows()
-
-#Extract animal metadata per sample.
-data_metadata <- bind_rows(my_abricate, my_amrfinder) %>%
-  mutate(identifier = paste("gene__", identifier, sep = "")) %>%
-  left_join(identifiers) %>%
-  separate(sampleid, into = c("blank1", "blank2", "sampleid"), sep = "-") %>%
-  select(-c("blank1", "blank2")) %>%
-  filter(host_animal_common != "duck") %>%
-  mutate(host_animal_common = case_when(
-    grepl("cat", .$host_animal_common, ignore.case = TRUE) ~ "cat",
-    grepl("cow", .$host_animal_common, ignore.case = TRUE) ~ "cattle",
-    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "dog",
-    grepl("horse", .$host_animal_common, ignore.case = TRUE) ~ "horse",
-    grepl("chick", .$host_animal_common, ignore.case = TRUE) ~ "chicken",
-    grepl("turk", .$host_animal_common, ignore.case = TRUE) ~ "turkey",
-    grepl("pig", .$host_animal_common, ignore.case = TRUE) ~ "swine")) %>%
-  mutate(host_animal_species = case_when(
-    grepl("cat", .$host_animal_common, ignore.case = TRUE) ~ "Felis catus",
-    grepl("cow", .$host_animal_common, ignore.case = TRUE) ~ "Bos taurus",
-    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "Canis familiaris",
-    grepl("horse", .$host_animal_common, ignore.case = TRUE) ~ "Equus caballus",
-    grepl("chick", .$host_animal_common, ignore.case = TRUE) ~ "Gallus gallus",
-    grepl("turk", .$host_animal_common, ignore.case = TRUE) ~ "Meleagris gallopavo",
-    grepl("pig", .$host_animal_common, ignore.case = TRUE) ~ "Sus domesticus")) %>%
-  janitor::clean_names() %>% 
-  select(sampleid, host_animal_common, host_animal_species) %>%
-  unique() %>%
-  setNames(., paste0("meta__", colnames(.))) %>%
-  mutate(meta__host_animal_common = factor(meta__host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "dog", "cat"))) 
-  
-  
-#separate phenotype MIC values
-data_mic <- my_data %>%
-  select(c(matches("MIC"), ID)) %>%
-  reshape2::melt(id.vars = "ID") %>% 
-  mutate(num = str_extract(value, "[0-9(.)]+")) %>%
-  mutate(equal = str_extract(value, "[<=>]")) %>%
-  filter(!is.na(value))
-head(data_mic)  
-
-#reformat AB breakpoint data
-data_ab <- ab_breakpoints %>%
+breakpoints_clean <- breakpoints %>%
   select(c("bacteria_species_scientific_name_general","animal_species_scientific_name", "test_type_desc", contains("test_result"))) %>%
   mutate(animal_species_scientific_name = trimws(gsub("\\(organism\\)", "", animal_species_scientific_name))) %>%
   select(-bacteria_species_scientific_name_general) %>%
@@ -248,61 +46,232 @@ data_ab <- ab_breakpoints %>%
   mutate(animal_species_scientific_name = ifelse( animal_species_scientific_name =="Genus Canis", "Canis familiaris", animal_species_scientific_name)) %>%
   mutate(animal_species_scientific_name = ifelse( animal_species_scientific_name =="Sus scrofa", "Sus domesticus", animal_species_scientific_name)) %>%
   group_by(animal_species_scientific_name, test_type_desc) %>%
-  slice(1)
-head(data_ab)
-
-#combine data_mic values with AB breakpoints to determine phenotypes of each sample.
-phenos_reference <- data_mic %>%
-  rename("meta__sampleid" = ID) %>%
-  left_join(select(data_metadata, c("meta__sampleid", "meta__host_animal_species")), by = "meta__sampleid") %>% 
-  rename("test_type_desc" = variable, "animal_species_scientific_name" =  meta__host_animal_species) %>%
-  left_join(data_ab, by = c("animal_species_scientific_name", "test_type_desc")) %>%
-  filter(!is.na(test_result_threshold_mic_sensitive_max)) %>%
-  mutate(num = as.numeric(num)) %>%
-  unique() %>%
-  mutate(phenotype = case_when(
-    num >= test_result_threshold_mic_resistant_min ~ "R",
-    num >= test_result_threshold_mic_intermediate_min & num <= test_result_threshold_mic_intermediate_max & num < test_result_threshold_mic_resistant_min ~ "I",
-    num <= test_result_threshold_mic_sensitive_max & num < test_result_threshold_mic_intermediate_min ~ "S"
-  )) %>% 
-  select(c("meta__sampleid", "test_type_desc", "phenotype")) %>%
-  unique()
-
-#determine sample phenotypes for samples with no reference MIC breakpoint values by
-# splitting values into tertiles.
-phenos_noreference <- data_mic %>%
-  rename("meta__sampleid" = ID) %>%
-  left_join(select(data_metadata, c("meta__sampleid", "meta__host_animal_species")), by = "meta__sampleid") %>% 
-  rename("test_type_desc" = variable, "animal_species_scientific_name" =  meta__host_animal_species) %>%
-  anti_join(data_ab, by = c("animal_species_scientific_name", "test_type_desc")) %>%
-  mutate(num = as.numeric(num)) %>%
-  unique() %>%
-  group_by(animal_species_scientific_name, test_type_desc) %>%
-  filter(!is.na(num)) %>%
-  mutate(quantile = cut(num, 3, labels = FALSE)) %>%
   ungroup() %>%
+  rename(host_animal_species = "animal_species_scientific_name") %>%
+  mutate(test_type_desc = gsub(" MIC", "", test_type_desc)) %>%
+  rename(breakpoint_id = "test_type_desc") 
+head(breakpoints_clean)
+
+# Phenotype Data
+# reshape and clean phenotype data
+ast_phenotype_raw <- bind_rows(data_files_list[grepl("ast", names(data_files_list))])
+
+ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]) %>%
+  janitor::clean_names() %>%
+  separate(laboratory_name, into = c("state", "laboratory_name"), sep = " - ") %>%
+  select(-c("state", "unique_specimen_id")) %>%
+  mutate(animal_species = tolower(animal_species), 
+         specimen_source_tissue = tolower(specimen_source_tissue), 
+         final_diagnosis = tolower(final_diagnosis)) %>%
+  mutate("animal_species" = gsub("poultry-domestic ", "", animal_species)) %>% 
+  mutate(animal_species = factor(animal_species, levels = c("cattle", "swine", "chicken", "turkey", "equine", "dog", "cat", "ducks"))) %>%
+  rename(host_animal_common = "animal_species") %>%
+  mutate(host_animal_species = case_when(
+    grepl("duck", .$host_animal_common, ignore.case = TRUE) ~ "Anas platyrhynchos",
+    grepl("cat\\>", .$host_animal_common, ignore.case = TRUE) ~ "Felis catus",
+    grepl("cattle", .$host_animal_common, ignore.case = TRUE) ~ "Bos taurus",
+    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "Canis familiaris",
+    grepl("equine", .$host_animal_common, ignore.case = TRUE) ~ "Equus caballus",
+    grepl("chicken", .$host_animal_common, ignore.case = TRUE) ~ "Gallus gallus",
+    grepl("turkey", .$host_animal_common, ignore.case = TRUE) ~ "Meleagris gallopavo",
+    grepl("swine", .$host_animal_common, ignore.case = TRUE) ~ "Sus domesticus")) %>%
+  select(-c("laboratory_name"))
+unique(select(ast_phenotype, host_animal_common, host_animal_species))
+# separate metadata
+sample_metadata <- ast_phenotype %>% 
+  select(-contains("mic")) %>%
+  select(sample_id, host_animal_species, host_animal_common, everything())  %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common))
+
+# calculate IC50 and IC90 values for animal-antibiotic combinations that 
+# do not have breakpoint values.
+phenotype_quantiles <- ast_phenotype %>% 
+  select(sample_id, host_animal_species, contains("mic")) %>%
+  reshape2::melt(id.vars = c("sample_id", "host_animal_species")) %>%
+  mutate(variable = gsub("_mic", "", variable)) %>%
+  rename(mic_id = "variable") %>%
+  left_join(select(classes, c("mic_id", "breakpoint_id"))) %>%
+  left_join(breakpoints_clean) %>%
+  mutate(num = as.character(str_extract(value, "[0-9/.]+"))) %>%
+  separate(num, into = c("a", "b"), sep = "/") %>%
+  pivot_longer(cols = c("a", "b"), names_to = "blank", values_to = "num") %>%
+  select(-c("blank")) %>%
+  filter(!is.na(num)) %>%
+  mutate(num = as.numeric(num)) %>%
+  mutate(equal = str_extract(value, "[<=>]+")) %>%
+  group_by(host_animal_species, mic_id) %>%  
+  summarise(quantile = scales::percent(c(0.50, 0.90)),
+            n = quantile(num, c(0.50, 0.90))) %>%
+  pivot_wider(names_from = "quantile", values_from = "n") %>%
+  rename(IC50 = "50%", IC90 = "90%")
+
+# separate mic
+phenotypes <- ast_phenotype %>% 
+  select(sample_id, host_animal_species, contains("mic")) %>%
+  reshape2::melt(id.vars = c("sample_id", "host_animal_species")) %>%
+  mutate(variable = gsub("_mic", "", variable)) %>%
+  rename(mic_id = "variable") %>%
+  left_join(select(classes, c("mic_id", "breakpoint_id"))) %>%
+  left_join(breakpoints_clean) %>%
+  mutate(num = as.character(str_extract(value, "[0-9/.]+"))) %>%
+  separate(num, into = c("num", "blank"), sep = "/") %>%
+  select(-c("blank")) %>%
+  mutate(equal = str_extract(value, "[<=>]+")) %>%
+  mutate(equal = replace_na(equal, "="), num = replace_na(num, 0)) %>%
   mutate(phenotype = case_when(
-    quantile == 3 ~ "R",
-    quantile == 2 ~ "I",
-    quantile == 1 ~ "S"
-  )) %>% 
-  select(c("meta__sampleid", "test_type_desc", "phenotype")) %>%
+    num >= test_result_threshold_mic_intermediate_max & (equal == ">" | equal == "=") ~ "R",
+    num <= test_result_threshold_mic_intermediate_min & (equal == "<=" | equal == "=") ~ "S",
+    num > test_result_threshold_mic_intermediate_min | num < test_result_threshold_mic_intermediate_max ~ "I")) %>%
+  left_join(phenotype_quantiles) %>%
+  mutate(phenotype_ic50 = ifelse(num <= IC50, "S", "R")) %>%
+  mutate(phenotype_ic90 = ifelse(num <= IC90, "S", "R")) %>%
+  filter(!is.na(value))
+
+
+
+# Genotype Data
+# reshape and clean abricate data
+abricate_raw <- bind_rows(data_files_list[grepl("abricate", names(data_files_list))])
+
+abricate_clean <- bind_rows(data_files_list[grepl("abricate", names(data_files_list))]) %>%
+  janitor::clean_names() %>%
+  select(c("sample_id", "strand", "gene", "database", "accession", "product", "resistance", "x_coverage", "x_identity")) %>%
+  rename(coverage = "x_coverage", identity = "x_identity") %>%
+  mutate(tool = "abricate") %>%
+  separate(sample_id, into = c("EC", "host_animal_common", "sample_id"), sep = "-") %>%
+  select(-c("EC")) %>%
+  mutate(host_animal_common = tolower(host_animal_common)) %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "cowmn55108ppy30052", "cow", host_animal_common)) %>%
+  mutate(host_animal_common = case_when( #change common animal names to standard format.
+    grepl("cat", .$host_animal_common, ignore.case = TRUE) ~ "cat",
+    grepl("cow", .$host_animal_common, ignore.case = TRUE) ~ "cattle",
+    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "dog",
+    grepl("horse", .$host_animal_common, ignore.case = TRUE) ~ "equine",
+    grepl("chick", .$host_animal_common, ignore.case = TRUE) ~ "chicken",
+    grepl("turk", .$host_animal_common, ignore.case = TRUE) ~ "turkey",
+    grepl("pig", .$host_animal_common, ignore.case = TRUE) ~ "swine",
+    grepl("duck", .$host_animal_common, ignore.case = TRUE) ~ "duck"))
+head(abricate_clean)
+
+# reshape and clean amrfinder data
+amrfinder_raw <-  bind_rows(data_files_list[grepl("amrfinder", names(data_files_list))])
+
+amrfinder_clean <- bind_rows(data_files_list[grepl("amrfinder", names(data_files_list))]) %>% 
+  janitor::clean_names() %>% 
+  select(c("sample_id", "strand", "gene_symbol", "sequence_name", "class", "subclass", "accession_of_closest_sequence", 
+           "x_coverage_of_reference_sequence", "x_identity_to_reference_sequence")) %>% 
+  rename(coverage = "x_coverage_of_reference_sequence", identity = "x_identity_to_reference_sequence") %>% 
+  mutate(tool = "amrfinder") %>%
+  rename(accession = "accession_of_closest_sequence") %>%
+  rename(gene = "gene_symbol") %>%
+  separate(sample_id, into = c("EC", "host_animal_common", "sample_id"), sep = "-") %>%
+  select(-c("EC")) %>%
+  mutate(host_animal_common = tolower(host_animal_common)) %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "cowmn55108ppy30052", "cow", host_animal_common)) %>%
+  mutate(host_animal_common = case_when( #change common animal names to standard format.
+    grepl("cat", .$host_animal_common, ignore.case = TRUE) ~ "cat",
+    grepl("cow", .$host_animal_common, ignore.case = TRUE) ~ "cattle",
+    grepl("dog", .$host_animal_common, ignore.case = TRUE) ~ "dog",
+    grepl("horse", .$host_animal_common, ignore.case = TRUE) ~ "horse",
+    grepl("chick", .$host_animal_common, ignore.case = TRUE) ~ "chicken",
+    grepl("turk", .$host_animal_common, ignore.case = TRUE) ~ "turkey",
+    grepl("duck", .$host_animal_common, ignore.case = TRUE) ~ "duck", 
+    grepl("pig", .$host_animal_common, ignore.case = TRUE) ~ "swine")) %>%
+  mutate(database = "amrfinder") %>%
+  rename(product = "sequence_name", resistance = "class")
+head(amrfinder_clean)
+
+genotypes <- bind_rows(abricate_clean, amrfinder_clean) %>%
+  mutate(gene = gsub("_[0-9]", "", gene))
+
+
+
+# Determine relationship between AMR gene and conferred antibiotic
+# resistance with CARD (Comprehensive Antibiotic Resistance Database) 
+#
+# Gene names in the genotype data do not exactly match entries in the CARD 
+# Unique gene names from the genotype data was manually cross referenced 
+# in the CARD database and was matched with the same or closest matching gene.
+# ===================================================================
+
+# Read in CARD ontology file.
+aro_obo <- ontologyIndex::get_ontology(paste(dataFolder, "card-ontology/aro.obo", sep = ""),
+                                       propagate_relationships = "is_a", extract_tags = "everything")
+
+# Write unique gene names to look up in CARD.
+card_lookups <- genotypes %>%
+  filter(database != "plasmidfinder") %>%
+  select(database, accession, gene) %>%
+  mutate(card_id = NA) %>%
   unique()
+write_csv(card_lookups, "data/card_lookups.csv")
 
-data_phenos <- bind_rows(phenos_reference, phenos_noreference)
-rm(phenos_reference, phenos_noreference)#
+# Read in abricate/amrfinder gene to CARD gene table 
+# after manual annotation.
+card_lookups_post <- read_csv("data/card_lookups_post.csv")
+
+# Change CARD gene names to accession numbers
+card_ids <- unique(card_lookups_post$card_id)
+accessions <- stack(aro_obo$name)
+accessions <- setNames(names(aro_obo$name), aro_obo$name)
+card_queries <- accessions[card_ids]
+
+# Search ontology for conferred resistance to drug classes and antibiotics.
+drug_class <- stack(lapply(card_queries, function(x){resistance_ontology_search(aro_obo, class = "drug_class", x)})) %>%
+  mutate(values = gsub(" antibiotic", "", values)) %>%
+  mutate(class = "drug_class")
+antibiotics <- stack(lapply(card_queries, function(x){resistance_ontology_search(aro_obo, class = "antibiotics", x)})) %>%
+  mutate(class = "antibiotic")
+
+gene_resistance <- bind_rows(drug_class, antibiotics) %>%
+  mutate(values = tolower(values)) %>%
+  rename(card_id = "ind", cardab_id = "values") %>%
+  left_join(unique(select(card_lookups_post, gene, card_id)))
 
 
-#Review final datafiles.
-#data_genes - ID and gene count data (long)
-#data_phenos - ID and phenotype information (long)
-#data_metadata - ID and metadata (wide)
-#data_hits - ID and number of unique genes for each animal/AB/phenotype
-#my_data - cumulative data file
 
-#group completed data files 
-tidy_data <- list(data_genes, data_phenos, data_metadata, data_hits, my_data)
-names(tidy_data) <- c("genes", "phenos", "metadata", "hits", "my_data")
-#save tidy data to file
-saveRDS(tidy_data, "data/tidy/tidy_data.RDS")
+# Combine relevant data together
+sample_genotypes <- genotypes %>%
+  mutate(gene_type = ifelse(database == "plasmidfinder", "plasmid", "chromosomal")) %>%
+  select(host_animal_common, sample_id, gene, gene_type, coverage, identity, database) %>%
+  left_join(gene_resistance) %>%
+  left_join(filter(select(classes, cardab_id, mic_id), !is.na(cardab_id))) %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common))
+
+sample_phenotypes <- phenotypes %>%
+  rename(clsi = "phenotype", ic50 = "phenotype_ic50", ic90 = "phenotype_ic90") %>%
+  select(sample_id, mic_id, clsi, ic50, ic90) %>%
+  pivot_longer(cols = c("clsi", "ic50", "ic90"), names_to = "breakpoint", values_to = "phenotype") %>%
+  filter(!is.na(phenotype)) 
+
+# Check what genes did not have card ab resistance entries.
+genes_nocard <- genotypes %>%
+  select(gene, database, accession) %>%
+  unique() %>%
+  left_join(gene_resistance)%>%
+  filter(database != "plasmidfinder") %>%
+  filter(is.na(card_id))
+
+
+# Preview data before exporting
+sample_genotypes %>% head()
+sample_metadata %>% head()
+sample_phenotypes %>% head()
+
+breakpoints_clean %>% head()
+classes %>% head()
+gene_resistance %>% head()
+genes_nocard %>% head()
+
+
+# Export data.
+sample_data <- list(sample_metadata, sample_genotypes, sample_phenotypes)
+names(sample_data) <- c("metadata", "genotypes", "phenotypes")
+saveRDS(sample_data, paste(dataFolder, "tidy/samples.RDS", sep = ""))
+
+reference_data <- list(breakpoints_clean, classes, gene_resistance, genes_nocard)
+names(reference_data) <- c("breakpoints", "classes", "resistance", "nocard")
+saveRDS(reference_data, paste(dataFolder, "tidy/reference.RDS", sep = ""))
+
+
 
