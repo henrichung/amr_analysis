@@ -3,7 +3,7 @@ setwd("E:/Projects/amr_analysis")
 library(tidyverse)
 library(ontologyIndex)
 rm(list = ls())
-source("helper_functions.R")
+source("code/helper_functions.R")
 
 dataFolder <- "data/"
 dataFiles <- list.files(dataFolder)
@@ -57,7 +57,7 @@ head(breakpoints_clean)
 ast_phenotype_raw <- bind_rows(data_files_list[grepl("ast", names(data_files_list))])
 
 ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]) %>%
-  janitor::clean_names() %>%
+  janitor::clean_names() %>% 
   separate(laboratory_name, into = c("state", "laboratory_name"), sep = " - ") %>%
   select(-c("state", "unique_specimen_id")) %>%
   mutate(animal_species = tolower(animal_species), 
