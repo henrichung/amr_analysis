@@ -1,4 +1,11 @@
-library(readxl)
+## ---------------------------
+## Purpose of script: 
+##  Various helper functions to use in USDA_AMR project 
+##  workflow.
+## Author: Henri Chung
+## ---------------------------
+
+require(readxl)
 
 # function to read all of the sheets from an excel document.
 read_excel_allsheets <- function(filename, tibble = FALSE) {
@@ -19,3 +26,5 @@ resistance_ontology_search <- function(aro_obo, acc, class){
   }
   return(aro_obo$name[c(unlist(ids))])
 }
+
+

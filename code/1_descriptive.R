@@ -1,38 +1,31 @@
+## ---------------------------
+## Purpose of script: 
+##  Generate plots and tables describing experimental data.
+##  Each plot aims to answer a basic question about the dataset.
+## Author: Henri Chung
+## ---------------------------
+
 # Load required packages and set up folder directory
 setwd("E:/Projects/amr_analysis")
 library(tidyverse)
 library(ontologyIndex)
 rm(list = ls())
+source("code/helper_functions.R")
 
-source("helper_functions.R")
+# Set up data folder
 dataFolder <- "data/"
 dataFile <- "tidy/samples.RDS"
 referenceFile <- "tidy/reference.RDS"
 
-
-
 # Read in tidy data.
 mydata <- readRDS(paste(dataFolder, dataFile, sep = ""))
 reference <- readRDS(paste(dataFolder, referenceFile, sep = ""))
+identifiers <- read_csv(paste(dataFolder, "identifier_edited.csv", sep = ""))
 
-#remove ducks
-sample_metadata <- mydata[["metadata"]] %>%
-  filter(host_animal_common != "ducks") %>% mutate(host_animal_common = as.character(host_animal_common)) %>%
-  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
-  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog"))) 
-
-sample_genotypes <- mydata[["genotypes"]] %>%
-  filter(host_animal_common != "duck") %>%
-  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog")))
-
-sample_phenotypes <- mydata[["phenotypes"]] %>%
-  filter(sample_id != "FL34741PPY20064")
-identifiers <- read_csv(paste(dataFolder, "identifier_edited2.csv", sep = ""))
-# Analysis
-
+sample_metadata <- mydata[["metadata"]]
+sample_genotypes <- mydata[["genotypes"]] 
+sample_phenotypes <- mydata[["phenotypes"]] 
 # Tables
-
-
 
 # What are the most prevalent genes among samples? (n = 846)
 t1d <- sample_genotypes %>%
@@ -51,6 +44,9 @@ t1 <- t1d %>%
 t1
 write_csv(t1, "outputs/total_gene_counts.csv")
 
+
+
+# What are the most prevalent genes per animal? (n = 846)
 t1b <- t1d %>%
   select(host_animal_common, sample_id, gene, gene_type) %>%
   unique() %>%
@@ -61,6 +57,8 @@ t1b <- t1d %>%
   pivot_wider(names_from = host_animal_common, values_from = sum)
 t1b
 write_csv(t1b, "outputs/total_gene_counts_animal.csv")
+
+
 
 # What are the most prevalent genes among samples by animal? 
 sample_counts <- sample_genotypes %>%
@@ -89,6 +87,8 @@ t2 <- t1d %>%
 t2  
 write_csv(t2, "outputs/gene_presence_per_animal.csv")
 
+
+
 # How many samples of each animal species were there?
 p1d <- sample_metadata %>% 
   select(sample_id, host_animal_common) %>%
@@ -109,6 +109,8 @@ p1
 pdf("outputs/sample_histogram_animal.pdf")
 p1
 dev.off()
+
+
 
 # How many samples of each animal species were there? (species names)
 p2d <- sample_metadata %>% 
@@ -131,6 +133,8 @@ pdf("outputs/sample_histogram_animal_species.pdf", height = 6, width = 10)
 p2
 dev.off()
 
+
+
 # How many genes were found in each sample by database?
 p3d <- sample_genotypes %>% 
   select(host_animal_common, sample_id, gene, database) %>%
@@ -149,6 +153,8 @@ p3
 pdf("outputs/database_bias_animal.pdf", height = 8, width = 14)
 p3
 dev.off()
+
+
 
 # How many unique genes were found per sample?
 p4d <- sample_genotypes %>%
@@ -200,8 +206,3 @@ p5b
 pdf("outputs/perc_identity_animal_database.pdf", height = 8, width = 14)
 p5b
 dev.off()
-
-# What is the distribution of phenotypes?
-
-
-sample_phenotypes
