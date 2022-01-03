@@ -67,7 +67,6 @@ breakpoints_clean <- breakpoints %>%
 head(breakpoints_clean)
 
 
-
 # Phenotype Data
 # reshape and clean phenotype data from "AST" sheets
 ast_phenotype_raw <- bind_rows(data_files_list[grepl("ast", names(data_files_list))])
@@ -236,7 +235,8 @@ gene_metadata <- read.csv("data/reference/identifiers_lookup_post_new.csv", enco
   left_join(drug_classes) %>%
   mutate(resistance_drug = ifelse(resistance_drug == "", resistance_drug2, resistance_drug)) %>%
   select(-c("resistance_drug2")) %>%
-  mutate(resistance_drug = trimws(resistance_drug), resistance_class = trimws(resistance_class))
+  mutate(resistance_drug = trimws(resistance_drug), resistance_class = trimws(resistance_class)) %>%
+  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) 
 
 
 # Combine relevant data together
@@ -245,7 +245,8 @@ sample_genotypes <- genotypes %>%
   select(host_animal_common, sample_id, gene, gene_type) %>%
   left_join(select(gene_metadata, gene, gene_identifier,  gene_type, gene_name_family, resistance_class)) %>%
   mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
-  unique()
+  unique() %>%
+  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) 
 
 # reformat phenotypes into long format, while removing threshold values.
 sample_phenotypes <- phenotypes %>%

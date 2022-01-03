@@ -29,13 +29,19 @@ gene_metadata <- reference$gene_metadata %>%
 
 pval = 0.05
 
-# reformat genotype data into a wide format
+# subset gene_metadat to the relationships between class of drugs and specific drugs
+gene_resistance <- gene_metadata %>%
+  select(resistance_class, resistance_drug) %>%
+  unique()
+
+# Set up logistic regression genotypes for 
+# multilevel analysis.
 logreg_genos <- sample_genotypes %>%
-  select(host_animal_common, sample_id, gene) %>%
-  left_join(gene_metadata) %>%
-  select(host_animal_common, sample_id, gene) %>%
-  unique() %>%
-  mutate(values = 1)
+  select(host_animal_common, sample_id, gene, resistance_class) %>%
+  group_by(host_animal_common, sample_id, resistance_class) %>%
+  summarize(values = n()) %>%
+  left_join(gene_resistance) %>%
+  filter(!is.na(resistance_drug))
 
 # Subset dataset such that all I -> R
 one_pheno <- sample_phenotypes %>%
@@ -60,7 +66,7 @@ three_pheno <- sample_phenotypes %>%
   mutate(phenotype = ifelse(phenotype == "R", 1, 0))
 
 data_phenotypes <- list(one_pheno,two_pheno, three_pheno)
-names(data_phenotypes) <- c("ItoR","ic50", "ic90")
+names(data_phenotypes) <- c("ItoR","ic50","ic90")
 
 
 # Univariate Logistic Regression w/ Pooled animal groups
@@ -71,34 +77,16 @@ names(data_phenotypes) <- c("ItoR","ic50", "ic90")
 custom_nest <- function(pheno, genos, gene_group){
   
   res1 <- genos %>%
-    rename(gene_group = gene_group) %>%
-    mutate(gene_group = paste("g_", gene_group, sep = "")) %>%
-    pivot_wider(names_from = "gene_group", values_from = "values") %>%
-    replace(is.na(.), 0 ) %>% 
-    pivot_longer(cols = contains("g_"), values_to = "values") %>%
-    mutate(name = gsub("g_", "", name)) %>%
-    rename(gene_group = "name") %>%
-    left_join(pheno, by = "sample_id") %>%
-    select(sample_id, host_animal_common, mic_id, phenotype, gene_group, values) %>%
-    group_by(mic_id, gene_group) %>%
-    nest() 
-  
+    rename(mic_id = "resistance_drug") %>%
+    left_join(pheno, by = c("sample_id", "mic_id")) %>%
+    filter(!is.na(phenotype)) %>%
+    select(resistance_class, mic_id, host_animal_common, sample_id, values, phenotype) %>%
+    group_by(resistance_class, mic_id) %>%
+    nest()
+  return(res1)
 }
 
 model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene")})
-
-# filter data to only gene-antibiotic relationships found in CARD
-custom_filter_nest <- function(.x, gene_resistance){
-  
-  res <- .x %>%
-    ungroup() %>%
-    mutate(combo = paste(gene_group, mic_id)) %>%
-    filter(combo %in% gene_resistance$combo)
-  return(res)
-}
-
-card_model_data <- lapply(model_data, function(.x){custom_filter_nest(.x, gene_resistance = gene_metadata)})
-
 
 # Custom filter data to fit model requirements  
 custom_filter <- function(x, filter = TRUE){
@@ -115,25 +103,34 @@ custom_filter <- function(x, filter = TRUE){
   }
 }
 
-filtered_model_data <- lapply(card_model_data, function(.x){custom_filter(.x, filter = TRUE)})
-unfiltered_model_data <- lapply(card_model_data, function(.x){custom_filter(.x, filter = FALSE)})
+filtered_model_data <- lapply(model_data, function(.x){custom_filter(.x, filter = TRUE)})
+unfiltered_model_data <- lapply(model_data, function(.x){custom_filter(.x, filter = FALSE)})
 
 
 # Fit models to data
 # ===================================
+
+model_fx <- function(.x){
+  res <- tryCatch(
+    {
+      output <- lme4::glmer( # fit model to data
+          phenotype~as.numeric(values) + (1|host_animal_common), # model formula
+          data = .x,  
+          family = binomial(link = "logit"), 
+          control = glmerControl(tolPwrss=1e-3))   
+    },
+      error=function(e) {
+        a <- c(0,1)
+        b <- c(1,0)
+        res <- lm(b~as.factor(a), data.frame(a,b))
+      })
+  return(res)
+  }
+
 custom_test <- function(x){
     res <- x %>%
-      mutate(fit = map(data, function(.x){return(lme4::glmer( # fit model to data
-        phenotype~as.factor(values) + (1|host_animal_common), # model formula
-        data = .x,  
-        family = binomial(link = "logit"), 
-        control = glmerControl(tolPwrss=1e-3)))})) %>%
-      mutate(summ = map(fit, function(.x){summary(.x)})) %>%
-      mutate(coefs = map(summ, function(.x){.x["coefficients"]})) %>%
-      mutate(pval = map(coefs, function(.x){return(.x[[1]] %>% as.data.frame() %>% select('Pr(>|z|)') %>% t())})) %>%
-      mutate(pval.factor = map(pval, function(.x){.x[,2]})) %>%
-      unnest(pval.factor) %>%
-      mutate(pval.adj = p.adjust(pval.factor, method = "holm"))
+      mutate(fit = map(data, model_fx)) %>%
+      mutate(summ = map(fit, function(.x){summary(.x)})) 
   return(res)
 }
 
