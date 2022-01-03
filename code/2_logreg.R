@@ -8,7 +8,6 @@
 # Load required packages and set up folder directory
 setwd("E:/Projects/amr_analysis")
 library(tidyverse)
-library(ontologyIndex)
 library(lme4)
 rm(list = ls())
 
@@ -22,10 +21,12 @@ mydata <- readRDS(paste(dataFolder, dataFile, sep = ""))
 reference <- readRDS(paste(dataFolder, referenceFile, sep = ""))
 
 sample_metadata <- mydata[["metadata"]]
-sample_genotypes <- mydata[["genotypes"]] 
+sample_genotypes <- mydata[["genotypes"]] %>%
+  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) 
 sample_phenotypes <- mydata[["phenotypes"]]
 
-gene_metadata <- reference$gene_metadata
+gene_metadata <- reference$gene_metadata %>%
+  mutate(combo = paste(gene, resistance_drug))
 
 pval = 0.05
 
@@ -33,28 +34,9 @@ pval = 0.05
 logreg_genos <- sample_genotypes %>%
   select(host_animal_common, sample_id, gene) %>%
   left_join(gene_metadata) %>%
-  select(host_animal_common, sample_id, gene_identifier) %>%
+  select(host_animal_common, sample_id, gene) %>%
   unique() %>%
   mutate(values = 1)
-
-
-# Check which method uncovers the most "expected" resistances given prior information
-custom_gene_subset <- function(.x, gene_group){
-  res <- .x$resistance %>%
-    select(-card_id) %>%
-    left_join(gene_metadata, by = "gene") %>%
-    rename(gene_group = gene_group) %>%
-    select(gene_group, gene_resistance) %>%
-    rename(cardab_id = "gene_resistance") %>%
-    left_join(reference$classes) %>%
-    select(gene_group, mic_id) %>%
-    mutate(combo = paste(gene_group, mic_id, sep = "_")) %>%
-    unique() %>%
-    filter(!is.na(mic_id))
-}
-
-gene_resistance <- custom_gene_subset(reference, "gene_identifier")
-
 
 # Subset dataset such that all I -> R
 one_pheno <- sample_phenotypes %>%
@@ -82,13 +64,12 @@ data_phenotypes <- list(one_pheno,two_pheno, three_pheno)
 names(data_phenotypes) <- c("ItoR","ic50", "ic90")
 
 
-
 # Univariate Logistic Regression w/ Pooled animal groups
 # Join and nest phenotype/genotype data for analysis
 # Filter data to fit model requirements
 # Filter data to only CARD relationships
 # ============================================
-custom_nest <- function(pheno, genos, gene_group, animal = FALSE){
+custom_nest <- function(pheno, genos, gene_group){
   
   res1 <- genos %>%
     rename(gene_group = gene_group) %>%
@@ -98,25 +79,26 @@ custom_nest <- function(pheno, genos, gene_group, animal = FALSE){
     pivot_longer(cols = contains("g_"), values_to = "values") %>%
     mutate(name = gsub("g_", "", name)) %>%
     rename(gene_group = "name") %>%
-    left_join(pheno) %>%
+    left_join(pheno, by = "sample_id") %>%
     select(sample_id, host_animal_common, mic_id, phenotype, gene_group, values) %>%
     group_by(mic_id, gene_group) %>%
     nest() 
   
 }
 
-model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene_identifier", animal = FALSE)})
+model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene")})
 
 # filter data to only gene-antibiotic relationships found in CARD
 custom_filter_nest <- function(.x, gene_resistance){
+  
   res <- .x %>%
     ungroup() %>%
-    mutate(combo = paste(gene_group, mic_id, sep = "_")) %>%
+    mutate(combo = paste(gene_group, mic_id)) %>%
     filter(combo %in% gene_resistance$combo)
   return(res)
 }
 
-card_model_data <- lapply(model_data, function(.x){custom_filter_nest(.x, gene_resistance = gene_resistance)})
+card_model_data <- lapply(model_data, function(.x){custom_filter_nest(.x, gene_resistance = gene_metadata)})
 
 
 # Custom filter data to fit model requirements  
@@ -178,9 +160,56 @@ unfiltered_results <- lapply(unfiltered_model_data2, function(.x){custom_test_no
 filtered_results
 unfiltered_results
 
+#
+a <- filtered_results[[1]] %>%
+  filter(pval.adj < 0.05 & pval.adj != 0) 
+b <- unfiltered_results[[1]] %>%
+  filter(pval.adj < 0.05 & pval.adj != 0)
+c <- bind_rows(a, b) 
+write_csv(select(c, c("mic_id", "gene_group", "pval.adj")), "outputs/logistic_regression_results.csv")
+
+d <- lapply(c$data, function(.x){res = .x %>% group_by(phenotype, values) %>% summarize(n = n()); return(res)})
+names(d) = c$combo
+
+e <- bind_rows(d, .id = "combo")
+write_csv(e, "outputs/logreg_sig_groups.csv")
 
 
+a <- filtered_results[[1]] %>%
+  filter(pval.adj > 0.05) 
+b <- unfiltered_results[[1]] %>%
+  filter(pval.adj > 0.05)
+c <- bind_rows(a, b) 
 
+d <- lapply(c$data, function(.x){res = .x %>% group_by(phenotype, values) %>% summarize(n = n()); return(res)})
+names(d) = c$combo
+
+e <- bind_rows(d, .id = "combo")
+write_csv(e, "outputs/logreg_notsig_groups.csv")
+###3
+## examine gene groups
+tet <- filter(card_model_data[[1]], grepl("tet", gene_group)) %>% filter(mic_id != "minocycline")
+tet_list <- lapply(tet$data, function(.x){group_by(.x, phenotype, values) %>% summarize(n = n())})
+names(tet_list) <- tet$combo
+tet_df <- bind_rows(tet_list, .id = "combo") %>%
+  rename(genotypes = values, individual_isolates = n)
+write_csv(tet_df, "tet_groups.csv")
+
+samples_tet <- sample_phenotypes %>%
+  filter(mic_id %in% c("doxycycline", "minocycline")) %>%
+  filter(phenotype == "R" & breakpoint == "clsi") %>%
+  pull(sample_id)
+
+sample_genotypes %>%
+  filter(sample_id %in% samples_tet) %>%
+  filter(grepl("tet", gene)) %>%
+  mutate(value = 1) %>%
+  select(sample_id, gene, value) %>%
+  pivot_wider(names_from = "gene", values_from = "value") %>%
+  replace(is.na(.), 0) %>%
+  select(-sample_id) %>%
+  colSums()
+###
 # Chisquare
 # ===================================
 # Suppress summarise info

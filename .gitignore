@@ -1,11 +1,17 @@
-#Data files
+# Job files
+/jobs
+
+# Data files
 /data
 
-#Output figires
+# Output figires
 /outputs
 
-#Documents
+# Documents
 /docs
+
+# "Old" Code
+/code/old
 
 # History files
 .Rhistory

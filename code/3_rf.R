@@ -14,11 +14,13 @@ library(themis)
 rm(list = ls())
 
 #source("code/helper_functions.R")
+args = commandArgs(trailingOnly=TRUE)
 message(Sys.time(), "| Setting up folder structure")
 dataFolder <- "data/"
 dataFile <- "tidy/samples.RDS"
 referenceFile <- "tidy/reference.RDS"
 pval = 0.05
+data_split = args[1]
 data_split = "ItoR"
 
 # Read in tidy data.
@@ -71,7 +73,7 @@ data_phenotypes <- list(one_pheno,two_pheno, three_pheno)
 names(data_phenotypes) <- c("ItoR","ic50", "ic90")
 
 # Join and nest phenotype/genotype data for analysis
-custom_nest <- function(pheno, genos, gene_group, animal = FALSE){
+custom_nest <- function(pheno, genos, gene_group){
   
   res1 <- genos %>%
     rename(gene_group = gene_group) %>%
@@ -81,15 +83,17 @@ custom_nest <- function(pheno, genos, gene_group, animal = FALSE){
     pivot_longer(cols = contains("g_"), values_to = "values") %>%
     mutate(name = gsub("g_", "", name)) %>%
     rename(gene_group = "name") %>%
-    left_join(pheno) %>%
+    left_join(pheno, by = "sample_id") %>%
     select(sample_id, host_animal_common, mic_id, phenotype, gene_group, values) %>%
-    group_by(mic_id, gene_group) %>%
+    filter(!is.na(mic_id)) %>%
+    group_by(mic_id, gene_group) %>% 
     nest() 
   
 }
 
 message(Sys.time(), "| Nesting model data")
-model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene_identifier", animal = FALSE)})
+model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene_identifier")})
+
 
 
 # Pivot data from long to wide format
@@ -112,45 +116,44 @@ model_data_final <- select(model_data_wide, -all_of(ubi_genes))
 message(Sys.time(), "| Starting ML workflow.")
 set.seed(12345)
 
-
-# Split data into training and testing set
-message(Sys.time(), "| Splitting data.")
-data_split <- initial_split(model_data_final, prop = 0.80)
-train_data <- training(data_split)
-test_data <- testing(data_split)
-
 # Extract names of variables
+temp = model_data[[1]] %>% unnest()
 animals <- as.character(unique(temp$host_animal_common)) %>% make_clean_names()
-genes <- colnames(model_data1)[colnames(model_data1) %in% (unique(temp$gene_group) %>% make_clean_names() )]
+genes <- colnames(model_data_final)[colnames(model_data_final) %in% (unique(temp$gene_group) %>% make_clean_names() )]
 antibiotics <- unique(temp$mic_id) %>% make_clean_names()
-antibiotics <- antibiotics[!(antibiotics %in% ubi_genes)]
-
-# Split training set into crossfolds
-message(Sys.time(), "| Crossfolding data.")
-train_vfold <- vfold_cv(train_data, v = 5, strata = host_animal_common) %>% 
-  mutate(df_ana = map(splits, analysis),
-         df_ass = map(splits, assessment))
-
-#responses <- paste0(c(antibiotics, antibiotics), collapse = "+")
-predictors <- paste0(genes, collapse = "+")
-
-# Set up random forest model
-message(Sys.time(), "| Beginning Model Loop.")
-data_model <- rand_forest(mtry = tune(), trees = 500, min_n = tune()) %>%
-    set_mode("classification") %>%
-    set_engine("ranger", importance = "impurity")
+antibiotics <- antibiotics[!(antibiotics %in% c(ubi_genes, "minocycline"))]
 
 # Store model results in list
 tune_list <- list()
 res_list <- list()
 
+antibiotics <- rev(antibiotics)
 # loop over each antibiotic
 for(i in 1:length(antibiotics)){
   message(Sys.time()," ", antibiotics[i])
   ab <- antibiotics[i]
 
-  # select genes and target antibiotic
-  temp <- select(train_data, all_of(c(genes, antibiotics[i])))
+  # Split data into training and testing set
+  message(Sys.time(), "| Splitting data.")
+  data_split <- initial_split(model_data_final, prop = 0.80, strata = antibiotics[i])
+  train_data <- training(data_split)
+  test_data <- testing(data_split)
+
+  # Split training set into crossfolds
+  message(Sys.time(), "| Crossfolding data.")
+  train_vfold <- vfold_cv(train_data, v = 5, strata = host_animal_common) %>% 
+    mutate(df_ana = map(splits, analysis),
+         df_ass = map(splits, assessment))
+
+  #responses <- paste0(c(antibiotics, antibiotics), collapse = "+")
+  predictors <- paste0(genes, collapse = "+")
+
+  # Set up random forest model
+  message(Sys.time(), "| Beginning Model Loop.")
+  data_model <- rand_forest(mtry = tune(), trees = 500, min_n = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("ranger", importance = "impurity")
+
   
   # define model recipe
   data_rec <- recipes::recipe(x = train_data) %>%
@@ -194,7 +197,7 @@ names(res_list) <- antibiotics
 # Save model outputs
 saveRDS(tune_list, paste0("outputs/",data_split, "_tune_list.RDS", sep = ""))
 saveRDS(res_list, paste0("outputs/",data_split, "_res_list.RDS", sep = ""))
-test <- readRDS("outputs/res_clsi.RDS")
+quit()
 
 
 # Write function to separate out individual animal results from RF output.

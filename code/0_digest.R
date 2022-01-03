@@ -6,9 +6,8 @@
 ## ---------------------------
 
 # Load required packages
-setwd("E:/Projects/amr_analysis")
+#setwd("E:/Projects/amr_analysis")
 library(tidyverse)
-library(ontologyIndex)
 rm(list = ls())
 source("code/helper_functions.R")
 
@@ -39,13 +38,20 @@ names(data_files_list) <- data_files
 classes <- read_csv(paste(dataFolder, "/reference/antibiotic classes.csv", sep = ""))
 head(classes)
 
-# Read in information about the S,I,R MIC breakpoints 
+# Read in information about the S,I,R MIC breakpoints 3
 # for different animal species/AB resistances.
+
+# Palanti Urinary breakpoints 
+urine_breakpoints <- read_csv(paste(dataFolder, "palantir_mic_sir.csv", sep = "")) %>%
+  mutate(host_animal_species = trimws(gsub("\\(organism\\)", "", animal_species_scientific_name))) %>%
+  mutate(breakpoint_id = gsub(" MIC", "", test_type_desc)) %>%
+  dplyr::select(-c("animal_species_scientific_name", "test_type_desc"))
+
 breakpoints <- read_excel(paste(dataFolder, "CLSIbreakpoint_refTablePalantir.xlsx", sep = ""))
 
 breakpoints_clean <- breakpoints %>%
   filter(bacteria_species_scientific_name_general == "Escherichia coli") %>% # filter to just E.Coli information
-  select(c("bacteria_species_scientific_name_general","animal_species_scientific_name", "test_type_desc", contains("test_result"))) %>% # select relevant columns
+  select(c("bacteria_species_scientific_name_general","animal_species_scientific_name", "test_type_desc", "animal_infection_site_uti", contains("test_result"))) %>% # select relevant columns
   mutate(animal_species_scientific_name = trimws(gsub("\\(organism\\)", "", animal_species_scientific_name))) %>% # remove "(organism) from species name column
   select(-bacteria_species_scientific_name_general) %>% 
   unique() %>% # remove duplicate observations
@@ -55,12 +61,25 @@ breakpoints_clean <- breakpoints %>%
   mutate(animal_species_scientific_name = ifelse( animal_species_scientific_name =="Sus scrofa", "Sus domesticus", animal_species_scientific_name)) %>%
   rename(host_animal_species = "animal_species_scientific_name") %>% # rename
   mutate(test_type_desc = gsub(" MIC", "", test_type_desc)) %>% # remove MIC from antibiotic type
-  rename(breakpoint_id = "test_type_desc") # rename
+  rename(breakpoint_id = "test_type_desc") %>% # rename
+  rbind(urine_breakpoints) %>%
+  unique()
 head(breakpoints_clean)
+
+
 
 # Phenotype Data
 # reshape and clean phenotype data from "AST" sheets
 ast_phenotype_raw <- bind_rows(data_files_list[grepl("ast", names(data_files_list))])
+
+# Check urine
+urine_diagnosis <- ast_phenotype_raw %>%
+  janitor::clean_names() %>%
+  select(c("final_diagnosis")) %>%
+  mutate(final_diagnosis = tolower(final_diagnosis)) %>%
+  unique() %>%
+  mutate(animal_infection_site_uti = ifelse(grepl("uti|pyuria|urinary.*infection", final_diagnosis), "UTI/urine/urinary tract", "Not UTI/urine/urinary tract"))
+write_csv(urine_diagnosis, "data/reference/urine_lookup_post.csv")
 
 ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]) %>%
   janitor::clean_names() %>%  # clean column names
@@ -80,7 +99,10 @@ ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]
     grepl("chicken", .$host_animal_common, ignore.case = TRUE) ~ "Gallus gallus",
     grepl("turkey", .$host_animal_common, ignore.case = TRUE) ~ "Meleagris gallopavo",
     grepl("swine", .$host_animal_common, ignore.case = TRUE) ~ "Sus domesticus")) %>%
-  mutate(host_animal_species = ifelse(host_animal_common == "equine", "Equus caballus", host_animal_species))
+  mutate(host_animal_species = ifelse(host_animal_common == "equine", "Equus caballus", host_animal_species)) %>%
+  mutate(animal_infection_site_uti = ifelse(grepl("uti|pyuria|urinary.*infection", final_diagnosis), "UTI/urine/urinary tract", "Not UTI/urine/urinary tract")) %>%
+  select(-contains("mic"), everything())
+
 
 # separate metadata from all data
 sample_metadata <- ast_phenotype %>% 
@@ -91,12 +113,12 @@ sample_metadata <- ast_phenotype %>%
 # calculate IC50 and IC90 values for animal-antibiotic combinations that 
 # do not have breakpoint values.
 phenotype_quantiles <- ast_phenotype %>% 
-  select(sample_id, host_animal_species, contains("mic")) %>%
-  reshape2::melt(id.vars = c("sample_id", "host_animal_species")) %>% # reshape data from wide to long
+  select(sample_id, host_animal_species, animal_infection_site_uti,  contains("mic")) %>%
+  reshape2::melt(id.vars = c("sample_id", "host_animal_species", "animal_infection_site_uti")) %>% # reshape data from wide to long
   mutate(variable = gsub("_mic", "", variable)) %>% # remove _mic suffix 
   rename(mic_id = "variable") %>% # change variable to mic_id
   left_join(select(classes, c("mic_id", "breakpoint_id"))) %>%
-  left_join(breakpoints_clean) %>% # join with breakpoints data
+  left_join(breakpoints_clean, by = c("host_animal_species", "breakpoint_id", "animal_infection_site_uti")) %>% # join with breakpoints data
   mutate(num = as.character(str_extract(value, "[0-9/.]+"))) %>%
   separate(num, into = c("a", "b"), sep = "/") %>%
   pivot_longer(cols = c("a", "b"), names_to = "blank", values_to = "num") %>%
@@ -112,34 +134,28 @@ phenotype_quantiles <- ast_phenotype %>%
 
 # separate mic
 phenotypes <- ast_phenotype %>% 
-  select(sample_id, host_animal_species, contains("mic")) %>% # select relevant columns
-  reshape2::melt(id.vars = c("sample_id", "host_animal_species")) %>% # reshape from wide to long format
+  select(sample_id, host_animal_species, animal_infection_site_uti, contains("mic")) %>% # select relevant columns
+  reshape2::melt(id.vars = c("sample_id", "host_animal_species", "animal_infection_site_uti")) %>% # reshape from wide to long format
   mutate(variable = gsub("_mic", "", variable)) %>% # remove _mic suffix
   rename(mic_id = "variable") %>% # rename variable
   left_join(select(classes, c("mic_id", "breakpoint_id"))) %>%  # join with antibiotic class to change names from mic_id to breakpoint_id
-  left_join(breakpoints_clean, by = c("breakpoint_id", "host_animal_species")) %>% # join to breakpoints by breakpoint_id
+  left_join(breakpoints_clean, by = c("breakpoint_id", "host_animal_species", "animal_infection_site_uti")) %>% # join to breakpoints by breakpoint_id
   mutate(num = as.character(str_extract(value, "[0-9/.]+"))) %>% # extract number values from [<=>]
   separate(num, into = c("num", "blank"), sep = "/") %>% # separate 
   select(-c("blank")) %>%
   mutate(equal = str_extract(value, "[<=>]+")) %>% # extract [<=>] from numbers
   mutate(equal = replace_na(equal, "="), num = replace_na(num, 0)) %>%  
-  mutate(phenotype = case_when(
-    num >= test_result_threshold_mic_intermediate_max & (equal == ">" | equal == "=") ~ "R", # if value > or = intermediate max, assign R
-    num <= test_result_threshold_mic_intermediate_min & (equal == "<=" | equal == "=") ~ "S", # if value <= or = intermediate min, assign I
-    num > test_result_threshold_mic_intermediate_min | num < test_result_threshold_mic_intermediate_max ~ "I")) %>% # if value > 
+  mutate(num = as.numeric(num)) %>%
+  mutate(phenotype = ifelse(num >= test_result_threshold_mic_intermediate_max & (equal == ">" | equal == "="), "R", "")) %>%
+  mutate(phenotype = ifelse(num <= test_result_threshold_mic_intermediate_min & (equal == "<=" | equal == "="), "S", phenotype)) %>%
+  mutate(phenotype = ifelse(num >= test_result_threshold_mic_intermediate_min & num <= test_result_threshold_mic_intermediate_max, "I", phenotype)) %>%
+  mutate(phenotype = ifelse((num <= test_result_threshold_mic_intermediate_min | num <= test_result_threshold_mic_resistant_min) & (num > test_result_threshold_mic_sensitive_max) & (equal == "<="), "NI", phenotype)) %>%
+  mutate(phenotype = ifelse(num > test_result_threshold_mic_resistant_min & (equal == "<="), "NI", phenotype)) %>%
   left_join(phenotype_quantiles) %>%
   mutate(phenotype_ic50 = ifelse(num <= IC50, "S", "R")) %>%
   mutate(phenotype_ic90 = ifelse(num <= IC90, "S", "R")) %>%
-  filter(!is.na(value))
-
-
-##
-# manually check phenotypes to make sure they make sense.
-spotcheck_phenotypes <- filter(phenotypes, !is.na(phenotype)) %>%
-  select(host_animal_species, mic_id, breakpoint_id, contains("threshold"),  num, equal, phenotype) %>%
-  unique()
-View(spotcheck_phenotypes)
-
+  filter(!is.na(value)) %>%
+  filter(num < 10000)
 
 # Separate abricate and amrfinder files based 
 # genotype data 
@@ -196,7 +212,8 @@ amrfinder_clean <- bind_rows(data_files_list[grepl("amrfinder", names(data_files
 head(amrfinder_clean)
 
 genotypes <- bind_rows(abricate_clean, amrfinder_clean) %>%
-  mutate(gene = gsub("_[0-9]", "", gene))
+  mutate(gene = gsub("_[0-9]", "", gene)) %>%
+  select(sample_id, everything())
 
 # save gene identifiers to lookup in CARD database
 identifiers_lookup <- genotypes %>%
@@ -206,77 +223,29 @@ identifiers_lookup <- genotypes %>%
 head(identifiers_lookup)
 write_csv(identifiers_lookup, "data/reference/identifiers_lookup.csv")  
 
-identifiers_lookup_post <- read.csv("data/reference/identifiers_lookup_post.csv", encoding = "UTF-8") %>%
+drug_classes <- read.csv("data/reference/drug_classes_new.csv", encoding = "UTF-8") %>%
+  rename("resistance_class" = "class", "resistance_drug2" = "antibiotic") %>%
+  mutate(resistance_class = ifelse(resistance_class == "beta lactam combo", "beta-lactam", resistance_class)) %>%
+  mutate(resistance_class = ifelse(resistance_class == "rifamicin", "rifamycin", resistance_class)) %>%
+  mutate(resistance_class = ifelse(resistance_class == "lincomycin", "lincosamide", resistance_class))
+
+gene_metadata <- read.csv("data/reference/identifiers_lookup_post_new.csv", encoding = "UTF-8") %>%
   select(-c("database", "accession")) %>%
-  mutate(gene_type = ifelse(gene_type == "", "chromosome", "plasmid")) 
+  mutate(gene_type = ifelse(gene_type == "chromosomal", "chromosome", gene_type)) %>%
+  separate_rows(resistance_drug, resistance_class, sep = "[,/]") %>%
+  left_join(drug_classes) %>%
+  mutate(resistance_drug = ifelse(resistance_drug == "", resistance_drug2, resistance_drug)) %>%
+  select(-c("resistance_drug2")) %>%
+  mutate(resistance_drug = trimws(resistance_drug), resistance_class = trimws(resistance_class))
 
-
-# Determine relationship between AMR gene and conferred antibiotic
-# resistance with CARD (Comprehensive Antibiotic Resistance Database) 
-#
-# Gene names in the genotype data do not exactly match entries in the CARD 
-# Unique gene names from the genotype data was manually cross referenced 
-# in the CARD database and was matched with the same or closest matching gene.
-# ===================================================================
-
-# Read in CARD ontology file.
-aro_obo <- ontologyIndex::get_ontology(paste(dataFolder, "card-ontology/aro.obo", sep = ""),
-                                       propagate_relationships = "is_a", extract_tags = "everything")
-
-# Change CARD gene names to accession numbers
-card_ids <- unique(identifiers_lookup_post$card_id)
-accessions <- stack(aro_obo$name)
-accessions <- setNames(names(aro_obo$name), aro_obo$name)
-card_queries <- accessions[card_ids]
-
-# Search ontology for conferred resistance to drug classes.
-drug_class <- stack(lapply(card_queries, function(x){resistance_ontology_search(aro_obo, class = "drug_class", x)})) %>%
-  mutate(class = "drug_class") 
-
-# parse through CARD ontology to retrieve drug classes.
-drug_class_accessions <- accessions[unique(drug_class$values)]
-a <- lapply(drug_class_accessions, function(x){get_descendants(ontology = aro_obo, roots = x)})
-b <- lapply(a, function(x){return(as.character(aro_obo$name[x[-1]]))})
-c <- stack(b) %>% rename(temp = "values", values = ind) 
-
-
-# write table of drugs to drug class.
-drug_classes <- rename(c, antibiotic = "temp", drug_class = "values")
-write_csv(drug_classes, "data/reference/drug_classes.csv")
-
-# label which genes should confer resistance to a specific drug.
-drug_class2 <- drug_class %>%
-  left_join(c) %>%
-  select(-values) %>%
-  rename(values = "temp")
-
-# search ontology for conferred resistance to antibiotics.
-antibiotics <- stack(lapply(card_queries, function(x){resistance_ontology_search(aro_obo, class = "antibiotics", x)})) %>%
-  mutate(class = "antibiotic")
-
-# combine gene resistance from drug class and antibiotics
-gene_resistance <- bind_rows(drug_class2, antibiotics) %>%
-  select(-class) %>%
-  mutate(values = tolower(values)) %>%
-  rename(card_id = "ind", cardab_id = "values") %>%
-  left_join(unique(select(identifiers_lookup_post, gene, card_id)))
-
-# create table of genes, type, gene family, and gene resistance.
-gene_metadata <- identifiers_lookup_post %>%
-  left_join(gene_resistance) %>%
-  unique() %>%
-  select(gene_identifier, gene, gene_type, gene_name_family, gene_name_family_desc, card_id, cardab_id) %>%
-  rename(gene_resistance = "cardab_id") %>%
-  mutate(gene_name_family = gsub("\\t", "", gene_name_family))
-head(gene_metadata)
 
 # Combine relevant data together
 sample_genotypes <- genotypes %>%
-  mutate(gene_type = ifelse(database == "plasmidfinder", "plasmid", "chromosomal")) %>%
-  select(host_animal_common, sample_id, gene, gene_type, coverage, identity, database) %>%
-  left_join(gene_resistance) %>%
-  left_join(filter(select(classes, cardab_id, mic_id), !is.na(cardab_id))) %>%
-  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common))
+  mutate(gene_type = ifelse(database == "plasmidfinder", "plasmid", "chromosome")) %>%
+  select(host_animal_common, sample_id, gene, gene_type) %>%
+  left_join(select(gene_metadata, gene, gene_identifier,  gene_type, gene_name_family, resistance_class)) %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
+  unique()
 
 # reformat phenotypes into long format, while removing threshold values.
 sample_phenotypes <- phenotypes %>%
@@ -284,14 +253,6 @@ sample_phenotypes <- phenotypes %>%
   select(sample_id, mic_id, clsi, ic50, ic90) %>%
   pivot_longer(cols = c("clsi", "ic50", "ic90"), names_to = "breakpoint", values_to = "phenotype") %>%
   filter(!is.na(phenotype)) 
-
-# Check what genes did not have card ab resistance entries.
-genes_nocard <- genotypes %>%
-  select(gene, database, accession) %>%
-  unique() %>%
-  left_join(gene_resistance)%>%
-  filter(database != "plasmidfinder") %>%
-  filter(is.na(card_id))
 
 
 # Preview data before exporting
@@ -308,10 +269,6 @@ sample_phenotypes %>% head()
 breakpoints_clean %>% head()
 # reference table of classes.
 classes %>% head()
-# table of gene resistance.
-gene_resistance %>% head()
-# table of genes without CARD reference.
-genes_nocard %>% head()
 # table of genes, gene family, and conferred resistance.
 gene_metadata %>% head()
 
@@ -338,8 +295,8 @@ sample_data <- list(sample_metadata2, sample_genotypes2, sample_phenotypes2)
 names(sample_data) <- c("metadata", "genotypes", "phenotypes")
 saveRDS(sample_data, paste(dataFolder, "tidy/samples.RDS", sep = ""))
 
-reference_data <- list(breakpoints_clean, classes, gene_resistance, genes_nocard, gene_metadata)
-names(reference_data) <- c("breakpoints", "classes", "resistance", "nocard", "gene_metadata")
+reference_data <- list(breakpoints_clean, classes, gene_metadata)
+names(reference_data) <- c("breakpoints", "classes", "gene_metadata")
 saveRDS(reference_data, paste(dataFolder, "tidy/reference.RDS", sep = ""))
 
 

@@ -6,9 +6,8 @@
 ## ---------------------------
 
 # Load required packages and set up folder directory
-setwd("E:/Projects/amr_analysis")
+setwd("E:/Projects/amr_analysis2")
 library(tidyverse)
-library(ontologyIndex)
 rm(list = ls())
 source("code/helper_functions.R")
 
@@ -101,15 +100,14 @@ p1 <- p1d %>%
   ggplot(aes(x = reorder(host_animal_common, desc(n)), y = n, fill = host_animal_common)) + 
   geom_bar(stat = "identity")  + 
   xlab("") + ylab("count") + 
-  ylim(0, 200) + 
-  labs(title = "Histogram of Samples by Animal origin (08/02/21)", subtitle = "N = 846") +
+  ylim(0, 250) + 
+  labs(title = "Histogram of Samples by Animal origin (08/02/21)", subtitle = "N = 1031") +
   geom_text(aes(label=n), vjust = -2)
 p1
 
 pdf("outputs/sample_histogram_animal.pdf")
 p1
 dev.off()
-
 
 
 # How many samples of each animal species were there? (species names)
@@ -124,8 +122,8 @@ p2 <- p2d %>%
   ggplot(aes(x = reorder(host_animal_species, desc(n)), y = n, fill = host_animal_species)) + 
   geom_bar(stat = "identity")  + 
   xlab("") + ylab("count") + 
-  ylim(0, 200) + 
-  labs(title = "Histogram of Samples by Animal origin (08/02/21)", subtitle = "N = 846") +
+  ylim(0, 250) + 
+  labs(title = "Histogram of Samples by Animal origin (08/02/21)", subtitle = "N = 1031") +
   geom_text(aes(label=n), vjust = -2)
 p2
 
@@ -147,7 +145,7 @@ p3 <- p3d %>%
   ggplot(aes(x = database, y = hits, fill = host_animal_common)) +
   geom_boxplot() +
   facet_wrap(~host_animal_common, nrow = 2) +
-  labs(fill = "Host Animal (Common)" , title = "# of AMR Genes by Host Animal and Database", subtitle = "N = 846")
+  labs(fill = "Host Animal (Common)" , title = "# of AMR Genes by Host Animal and Database", subtitle = "N = 1031")
 p3
 
 pdf("outputs/database_bias_animal.pdf", height = 8, width = 14)
@@ -166,7 +164,7 @@ p4d
 p4 <- p4d %>%
   ggplot(aes(x = host_animal_common, y = hits, fill = host_animal_common)) +
   geom_boxplot()+
-  labs(fill = "Host Animal (Common)" , title = "# of unique AMR Genes by Host Animal", subtitle = "N = 846")
+  labs(fill = "Host Animal (Common)" , title = "# of unique AMR Genes by Host Animal", subtitle = "N = 1031")
 p4
 
 pdf("outputs/unique_genes_animal.pdf")
@@ -206,3 +204,4 @@ p5b
 pdf("outputs/perc_identity_animal_database.pdf", height = 8, width = 14)
 p5b
 dev.off()
+
