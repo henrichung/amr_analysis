@@ -1,3 +1,9 @@
+#
+*.csv
+*.RDS
+*.pdf
+*.out
+
 # Job files
 /jobs
 
