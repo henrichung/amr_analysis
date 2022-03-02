@@ -13,18 +13,12 @@ library(ranger)
 library(themis)
 rm(list = ls())
 
-#source("code/helper_functions.R")
-args = commandArgs(trailingOnly=TRUE)
-message(Sys.time(), "| Setting up folder structure")
+# Set up data folder
 dataFolder <- "data/"
 dataFile <- "tidy/samples.RDS"
 referenceFile <- "tidy/reference.RDS"
-pval = 0.05
-data_split = args[1]
-data_split = "ItoR"
 
 # Read in tidy data.
-message(Sys.time(), "| Reading in data")
 mydata <- readRDS(paste(dataFolder, dataFile, sep = ""))
 reference <- readRDS(paste(dataFolder, referenceFile, sep = ""))
 
@@ -32,78 +26,72 @@ sample_metadata <- mydata[["metadata"]]
 sample_genotypes <- mydata[["genotypes"]] 
 sample_phenotypes <- mydata[["phenotypes"]]
 
-identifiers <- read_csv(paste(dataFolder, "identifier_edited.csv", sep = ""))
+gene_metadata <- reference$gene_metadata %>%
+  mutate(reference$gene_metadata, combo = paste(gene, resistance_drug)) 
 
-gene_metadata <- reference$gene_metadata
+pval = 0.05
 
-# reformat genotype data
+# reformat genotype data into a wide format
 logreg_genos <- sample_genotypes %>%
-  select(host_animal_common, sample_id, gene) %>%
-  left_join(gene_metadata) %>%
-  select(host_animal_common, sample_id, gene_identifier) %>%
+  select(host_animal_common, sample_id, gene, gene_name_family) %>%
   unique() %>%
   mutate(values = 1)
 
-# 1. Univariate modeling of genotype to binarized phenotypic output of clsi data.
-# N = 7364 
 # Subset dataset such that all I -> R
-one_pheno <- sample_phenotypes %>%
+clsi_phenotypes <- sample_phenotypes %>%
   filter(breakpoint == "clsi") %>%
   mutate(phenotype = ifelse(phenotype == "I", "R", phenotype)) %>%
   select(sample_id, mic_id, phenotype) %>%
   unique() %>%
-  mutate(phenotype = ifelse(phenotype == "R", 1, 0))
+  mutate(phenotype = ifelse(phenotype == "R", 1, 0)) 
 
-# Same samples are significant in I > R and I > S
-# what about for 50th quantile?
-two_pheno <- sample_phenotypes %>%
-  filter(breakpoint == "ic50") %>%
+# separate phenotypes based on 50th quantile
+
+clsi_exclude <- unique(paste(clsi_phenotypes$sample_id, clsi_phenotypes$mic_id))
+iq_phenotypes <- sample_phenotypes %>%
+  filter(breakpoint == "iq") %>%
   select(sample_id, mic_id, phenotype) %>%
   unique() %>%
-  mutate(phenotype = ifelse(phenotype == "R", 1, 0))
+  mutate(phenotype = ifelse(phenotype == "R", 1, 0)) %>%
+  mutate(combo = paste(sample_id, mic_id)) %>%
+  filter(!(combo %in% clsi_exclude)) %>%
+  select(-combo)
 
-# what about for 90th quantile?
-three_pheno <- sample_phenotypes %>%
-  filter(breakpoint == "ic90") %>%
-  select(sample_id, mic_id, phenotype) %>%
-  unique() %>%
-  mutate(phenotype = ifelse(phenotype == "R", 1, 0))
 
-data_phenotypes <- list(one_pheno,two_pheno, three_pheno)
-names(data_phenotypes) <- c("ItoR","ic50", "ic90")
+data_phenotypes <- list(clsi_phenotypes, iq_phenotypes)
+names(data_phenotypes) <- c("ItoR","iq75")
+
 
 # Join and nest phenotype/genotype data for analysis
-custom_nest <- function(pheno, genos, gene_group){
+
+pheno <- data_phenotypes[[2]]
+genos <- logreg_genos
+gene_group = "gene"
+pivot_wide <- function(pheno, genos, gene_group){
   
-  res1 <- genos %>%
-    rename(gene_group = gene_group) %>%
+  wide_genes <- genos %>%
+  	select(c("host_animal_common", "sample_id", gene_group, "values")) %>%
+  	rename(gene_group = gene_group) %>%
     mutate(gene_group = paste("g_", gene_group, sep = "")) %>%
     pivot_wider(names_from = "gene_group", values_from = "values") %>%
-    replace(is.na(.), 0 ) %>% 
-    pivot_longer(cols = contains("g_"), values_to = "values") %>%
-    mutate(name = gsub("g_", "", name)) %>%
-    rename(gene_group = "name") %>%
-    left_join(pheno, by = "sample_id") %>%
-    select(sample_id, host_animal_common, mic_id, phenotype, gene_group, values) %>%
-    filter(!is.na(mic_id)) %>%
-    group_by(mic_id, gene_group) %>% 
-    nest() 
-  
+    replace(is.na(.), 0 )
+
+   wide_pheno <- pheno %>%
+    mutate(phenotype_group = paste("p_", mic_id, sep = "")) %>%
+    select(-mic_id) %>%
+    pivot_wider(names_from = "phenotype_group", values_from = "phenotype") %>%
+    replace(is.na(.), 0 )
+
+    res <- merge(wide_genes, wide_pheno, by = "sample_id")
 }
 
 message(Sys.time(), "| Nesting model data")
-model_data <- lapply(data_phenotypes, function(.x){custom_nest(.x, logreg_genos, "gene_identifier")})
+model_data <- lapply(data_phenotypes, function(.x){pivot_wide(.x, logreg_genos, "gene")})
 
 
-
+data_split = "ItoR"
 # Pivot data from long to wide format
 model_data_wide <- model_data[[data_split]] %>%
-  unnest(data) %>% 
-  unique() %>%
-  filter(!is.na(mic_id)) %>%
-  group_by(sample_id) %>%
-  pivot_wider(names_from = "mic_id", values_from = "phenotype", values_fill = 0) %>%
-  pivot_wider(names_from = "gene_group", values_from = "values", values_fill = 0) %>%
   clean_names() %>%
   mutate_if(is.numeric, as.factor)
 
@@ -117,11 +105,12 @@ message(Sys.time(), "| Starting ML workflow.")
 set.seed(12345)
 
 # Extract names of variables
-temp = model_data[[1]] %>% unnest()
+temp = model_data[[1]]
 animals <- as.character(unique(temp$host_animal_common)) %>% make_clean_names()
-genes <- colnames(model_data_final)[colnames(model_data_final) %in% (unique(temp$gene_group) %>% make_clean_names() )]
-antibiotics <- unique(temp$mic_id) %>% make_clean_names()
-antibiotics <- antibiotics[!(antibiotics %in% c(ubi_genes, "minocycline"))]
+g_genes <- make_clean_names(colnames(temp)[grepl("g_", colnames(temp))])
+genes <- colnames(model_data_final)[colnames(model_data_final) %in% (g_genes)]
+p_antibiotics <- make_clean_names(colnames(temp)[grepl("p_", colnames(temp))])
+antibiotics <- p_antibiotics[!( p_antibiotics %in% c(ubi_genes, "minocycline"))]
 
 # Store model results in list
 tune_list <- list()

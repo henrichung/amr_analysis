@@ -9,11 +9,33 @@
 #setwd("E:/Projects/amr_analysis")
 library(tidyverse)
 rm(list = ls())
-source("code/helper_functions.R")
+
 
 # Set up data folders
 dataFolder <- "data/"
 dataFiles <- list.files(dataFolder)
+
+require(readxl)
+
+# function to read all of the sheets from an excel document.
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+
+# function to search CARD ontology database for confers_resistance properties
+resistance_ontology_search <- function(aro_obo, acc, class){
+  temp <- get_ancestors(aro_obo, acc)
+  if(class == "drug_class"){
+    ids <- lapply(temp, function(x){get_term_property(ontology = aro_obo, property = "confers_resistance_to_drug_class", term = x)})
+  }else if(class == "antibiotics"){
+    ids <- lapply(temp, function(x){get_term_property(ontology = aro_obo, property = "confers_resistance_to_antibiotic", term = x)})
+  }
+  return(aro_obo$name[c(unlist(ids))])
+}
 
 
 # Parse through pp# files for sample data.
@@ -34,7 +56,7 @@ names(data_files_list) <- data_files
 #  abricate/amrfinder - genotype data 
 # ===================================
 
-# Load crossreference for antibiotic agents against different databases.
+# classes object is a reference table the name of the same antibiotic agent across different databases.
 classes <- read_csv(paste(dataFolder, "/reference/antibiotic classes.csv", sep = ""))
 head(classes)
 
@@ -47,8 +69,10 @@ urine_breakpoints <- read_csv(paste(dataFolder, "palantir_mic_sir.csv", sep = ""
   mutate(breakpoint_id = gsub(" MIC", "", test_type_desc)) %>%
   dplyr::select(-c("animal_species_scientific_name", "test_type_desc"))
 
+# Read in Palantir breakpoints
 breakpoints <- read_excel(paste(dataFolder, "CLSIbreakpoint_refTablePalantir.xlsx", sep = ""))
 
+# Reshape Breakpoint information
 breakpoints_clean <- breakpoints %>%
   filter(bacteria_species_scientific_name_general == "Escherichia coli") %>% # filter to just E.Coli information
   select(c("bacteria_species_scientific_name_general","animal_species_scientific_name", "test_type_desc", "animal_infection_site_uti", contains("test_result"))) %>% # select relevant columns
@@ -67,11 +91,13 @@ breakpoints_clean <- breakpoints %>%
 head(breakpoints_clean)
 
 
+
 # Phenotype Data
 # reshape and clean phenotype data from "AST" sheets
+# ===================================
 ast_phenotype_raw <- bind_rows(data_files_list[grepl("ast", names(data_files_list))])
 
-# Check urine
+# Check whether samples had a UTI infection diagnosis
 urine_diagnosis <- ast_phenotype_raw %>%
   janitor::clean_names() %>%
   select(c("final_diagnosis")) %>%
@@ -80,7 +106,8 @@ urine_diagnosis <- ast_phenotype_raw %>%
   mutate(animal_infection_site_uti = ifelse(grepl("uti|pyuria|urinary.*infection", final_diagnosis), "UTI/urine/urinary tract", "Not UTI/urine/urinary tract"))
 write_csv(urine_diagnosis, "data/reference/urine_lookup_post.csv")
 
-ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]) %>%
+# Reshape and clean AST phenotype data into tidy format
+ast_phenotype <- ast_phenotype_raw %>%
   janitor::clean_names() %>%  # clean column names
   select(-c("laboratory_name", "unique_specimen_id")) %>%
   mutate(animal_species = tolower(animal_species), # reduce column values to lowercase
@@ -102,16 +129,22 @@ ast_phenotype <- bind_rows(data_files_list[grepl("ast", names(data_files_list))]
   mutate(animal_infection_site_uti = ifelse(grepl("uti|pyuria|urinary.*infection", final_diagnosis), "UTI/urine/urinary tract", "Not UTI/urine/urinary tract")) %>%
   select(-contains("mic"), everything())
 
-
 # separate metadata from all data
 sample_metadata <- ast_phenotype %>% 
+  mutate(sample_id = gsub("\\.1", "", sample_id)) %>%
   select(-contains("mic")) %>% # remove MIC values
   select(sample_id, host_animal_species, host_animal_common, everything())  %>%
-  mutate(host_animal_common = as.character(host_animal_common)) 
+  mutate(host_animal_common = as.character(host_animal_common)) %>%
+  filter(host_animal_common != "ducks") %>% mutate(host_animal_common = as.character(host_animal_common)) %>%
+  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
+  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog"))) 
 
-# calculate IC50 and IC90 values for animal-antibiotic combinations that 
-# do not have breakpoint values.
-phenotype_quantiles <- ast_phenotype %>% 
+# For samples that do not have a reference breakpoint value,
+# determine a value by checking what quantile breakpoint best classifies known samples
+# ===================================
+
+# reshape ast phenotype matrix into long format
+temp_phenotype_quantiles <- ast_phenotype %>% 
   select(sample_id, host_animal_species, animal_infection_site_uti,  contains("mic")) %>%
   reshape2::melt(id.vars = c("sample_id", "host_animal_species", "animal_infection_site_uti")) %>% # reshape data from wide to long
   mutate(variable = gsub("_mic", "", variable)) %>% # remove _mic suffix 
@@ -124,15 +157,10 @@ phenotype_quantiles <- ast_phenotype %>%
   select(-c("blank")) %>%
   filter(!is.na(num)) %>%
   mutate(num = as.numeric(num)) %>%
-  mutate(equal = str_extract(value, "[<=>]+")) %>%
-  group_by(host_animal_species, mic_id) %>%  
-  summarise(quantile = scales::percent(c(0.50, 0.90)),
-            n = quantile(num, c(0.50, 0.90))) %>%
-  pivot_wider(names_from = "quantile", values_from = "n") %>%
-  rename(IC50 = "50%", IC90 = "90%")
+  mutate(equal = str_extract(value, "[<=>]+")) 
 
 # separate mic
-phenotypes <- ast_phenotype %>% 
+temp_phenotypes <- ast_phenotype %>% 
   select(sample_id, host_animal_species, animal_infection_site_uti, contains("mic")) %>% # select relevant columns
   reshape2::melt(id.vars = c("sample_id", "host_animal_species", "animal_infection_site_uti")) %>% # reshape from wide to long format
   mutate(variable = gsub("_mic", "", variable)) %>% # remove _mic suffix
@@ -149,10 +177,65 @@ phenotypes <- ast_phenotype %>%
   mutate(phenotype = ifelse(num <= test_result_threshold_mic_intermediate_min & (equal == "<=" | equal == "="), "S", phenotype)) %>%
   mutate(phenotype = ifelse(num >= test_result_threshold_mic_intermediate_min & num <= test_result_threshold_mic_intermediate_max, "I", phenotype)) %>%
   mutate(phenotype = ifelse((num <= test_result_threshold_mic_intermediate_min | num <= test_result_threshold_mic_resistant_min) & (num > test_result_threshold_mic_sensitive_max) & (equal == "<="), "NI", phenotype)) %>%
-  mutate(phenotype = ifelse(num > test_result_threshold_mic_resistant_min & (equal == "<="), "NI", phenotype)) %>%
+  mutate(phenotype = ifelse(num > test_result_threshold_mic_resistant_min & (equal == "<="), "NI", phenotype)) 
+
+
+# Quantiles to iterate over
+qts <- c(0.40, 0.45, 0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
+
+# Quant test results in dataframe
+results <- as.data.frame(matrix(nrow = 12, ncol = 4))
+rownames(results) = as.character(qts)
+colnames(results) = c("R_pos", "R_neg", "S_pos", "S_neg")
+
+# loop over quantiles
+for(i in 1:length(qts)){
+  q = qts[i]
+  qn = paste(as.character(q*100), "%", sep = "")
+
+  a <- temp_phenotype_quantiles %>%
+    group_by(host_animal_species, mic_id) %>%  
+    summarise(quantile = scales::percent(c(q)),
+            n = quantile(num, c(q))) %>%
+    pivot_wider(names_from = "quantile", values_from = "n") %>%
+    rename(IQ = qn)
+
+  b <- temp_phenotypes %>%
+    left_join(a) %>%
+    mutate(phenotype_iq = ifelse(num <= IQ & grepl("<|=", equal), "S", "R")) %>%
+    filter(!is.na(value)) %>%
+    filter(num < 10000)
+
+  R_pos <- filter(b, phenotype == "R") %>% filter(phenotype == phenotype_iq) %>% nrow() # TP
+  R_neg <- filter(b, phenotype == "R") %>% filter(phenotype != phenotype_iq) %>% nrow() # FN
+  S_pos <- filter(b, phenotype == "S") %>% filter(phenotype == phenotype_iq) %>% nrow() # TN
+  S_neg <- filter(b, phenotype == "S") %>% filter(phenotype != phenotype_iq) %>% nrow() # FP
+
+  results[i, ] <- c(R_pos, R_neg, S_pos, S_neg)
+}
+
+# calculate performance metrics for quantile breakpoints
+results2 <- results %>%
+  rownames_to_column("quantile") %>%
+  rowwise() %>%
+  mutate(accuracy = (R_pos + S_pos) / sum(R_pos, R_neg, S_pos, S_neg), F1 = (2 * R_pos) / (2*R_pos + S_neg + R_neg) ) %>%
+  mutate(tpr = R_pos / (R_pos + R_neg), tnr = S_pos / (S_pos + S_neg), bal_acc = (tpr + tnr) / 2)
+
+# save quantile which gives the highest F1 score on labeled samples
+max_qt <- qts[which(results2$F1 == max(results2$F1))]
+
+# Assign new best quantile breakpoint to samples without known breakpoints
+phenotype_quantiles <- temp_phenotype_quantiles %>%
+  group_by(host_animal_species, mic_id) %>%  
+  summarise(quantile = scales::percent(c(max_qt)),
+            n = quantile(num, c(max_qt))) %>%
+  pivot_wider(names_from = "quantile", values_from = "n") %>%
+  rename(IQ = paste(as.character(max_qt*100), "%", sep = ""))
+
+# label phenotypes
+phenotypes <- temp_phenotypes %>%
   left_join(phenotype_quantiles) %>%
-  mutate(phenotype_ic50 = ifelse(num <= IC50, "S", "R")) %>%
-  mutate(phenotype_ic90 = ifelse(num <= IC90, "S", "R")) %>%
+  mutate(phenotype_iq = ifelse(num <= IQ & grepl("<|=", equal), "S", "R")) %>%
   filter(!is.na(value)) %>%
   filter(num < 10000)
 
@@ -210,11 +293,14 @@ amrfinder_clean <- bind_rows(data_files_list[grepl("amrfinder", names(data_files
   rename(product = "sequence_name", resistance = "class")
 head(amrfinder_clean)
 
+
+# combine abricate and amrfinder data
 genotypes <- bind_rows(abricate_clean, amrfinder_clean) %>%
   mutate(gene = gsub("_[0-9]", "", gene)) %>%
-  select(sample_id, everything())
-
+  select(sample_id, everything()) %>%
+  mutate(sample_id = ifelse(sample_id == "N47907PPY10019", "IN47907PPY10019", sample_id)) 
 # save gene identifiers to lookup in CARD database
+# 
 identifiers_lookup <- genotypes %>%
   select(gene, database, accession) %>%
   unique() %>%
@@ -228,6 +314,7 @@ drug_classes <- read.csv("data/reference/drug_classes_new.csv", encoding = "UTF-
   mutate(resistance_class = ifelse(resistance_class == "rifamicin", "rifamycin", resistance_class)) %>%
   mutate(resistance_class = ifelse(resistance_class == "lincomycin", "lincosamide", resistance_class))
 
+# Reference table which labels which genes / gene identifiers are supposed to confer resistance to drug classes / specific drugs.
 gene_metadata <- read.csv("data/reference/identifiers_lookup_post_new.csv", encoding = "UTF-8") %>%
   select(-c("database", "accession")) %>%
   mutate(gene_type = ifelse(gene_type == "chromosomal", "chromosome", gene_type)) %>%
@@ -236,25 +323,32 @@ gene_metadata <- read.csv("data/reference/identifiers_lookup_post_new.csv", enco
   mutate(resistance_drug = ifelse(resistance_drug == "", resistance_drug2, resistance_drug)) %>%
   select(-c("resistance_drug2")) %>%
   mutate(resistance_drug = trimws(resistance_drug), resistance_class = trimws(resistance_class)) %>%
-  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) 
-
+  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) %>%
+  filter(!(resistance_drug == "gentamicin" & resistance_class == "fluoroquinoline")) 
 
 # Combine relevant data together
 sample_genotypes <- genotypes %>%
   mutate(gene_type = ifelse(database == "plasmidfinder", "plasmid", "chromosome")) %>%
+  mutate(sample_id = gsub("_2", "", sample_id)) %>%
   select(host_animal_common, sample_id, gene, gene_type) %>%
   left_join(select(gene_metadata, gene, gene_identifier,  gene_type, gene_name_family, resistance_class)) %>%
   mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
   unique() %>%
-  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) 
+  mutate(gene = ifelse(gene == "tet(M)2", "tet(M)", gene)) %>%
+  filter(!is.na(gene_name_family)) %>%
+  filter(host_animal_common != "duck") %>%
+  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog"))) %>%
+  mutate(sample_id = ifelse(sample_id == "IA50014PP30306", "IA50014PPY30306", sample_id))
+
 
 # reformat phenotypes into long format, while removing threshold values.
 sample_phenotypes <- phenotypes %>%
-  rename(clsi = "phenotype", ic50 = "phenotype_ic50", ic90 = "phenotype_ic90") %>%
-  select(sample_id, mic_id, clsi, ic50, ic90) %>%
-  pivot_longer(cols = c("clsi", "ic50", "ic90"), names_to = "breakpoint", values_to = "phenotype") %>%
-  filter(!is.na(phenotype)) 
-
+  mutate(sample_id = gsub("\\.1", "", sample_id)) %>%
+  rename(clsi = "phenotype", iq = "phenotype_iq") %>%
+  select(sample_id, mic_id, clsi, iq) %>%
+  pivot_longer(cols = c("clsi", "iq"), names_to = "breakpoint", values_to = "phenotype") %>%
+  filter(!is.na(phenotype))  %>%
+  filter(sample_id != "FL34741PPY20064")
 
 # Preview data before exporting
 # ===================================
@@ -273,31 +367,14 @@ classes %>% head()
 # table of genes, gene family, and conferred resistance.
 gene_metadata %>% head()
 
-
-# Custom adjustments
-# Remove duck observations from data.
-# ===================================
-
-# remove ducks
-sample_metadata2 <- sample_metadata %>%
-  filter(host_animal_common != "ducks") %>% mutate(host_animal_common = as.character(host_animal_common)) %>%
-  mutate(host_animal_common = ifelse(host_animal_common == "equine", "horse", host_animal_common)) %>%
-  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog"))) 
-
-sample_genotypes2 <- sample_genotypes %>%
-  filter(host_animal_common != "duck") %>%
-  mutate(host_animal_common = factor(host_animal_common, levels = c("cattle", "swine", "chicken", "turkey", "horse", "cat", "dog")))
-
-sample_phenotypes2 <- sample_phenotypes %>%
-  filter(sample_id != "FL34741PPY20064")
-
 # Export data.
-sample_data <- list(sample_metadata2, sample_genotypes2, sample_phenotypes2)
+sample_data <- list(sample_metadata, sample_genotypes, sample_phenotypes)
 names(sample_data) <- c("metadata", "genotypes", "phenotypes")
 saveRDS(sample_data, paste(dataFolder, "tidy/samples.RDS", sep = ""))
 
-reference_data <- list(breakpoints_clean, classes, gene_metadata)
-names(reference_data) <- c("breakpoints", "classes", "gene_metadata")
+reference_data <- list(breakpoints_clean, classes, gene_metadata, genotypes)
+names(reference_data) <- c("breakpoints", "classes", "gene_metadata", "genotypes")
 saveRDS(reference_data, paste(dataFolder, "tidy/reference.RDS", sep = ""))
+
 
 
